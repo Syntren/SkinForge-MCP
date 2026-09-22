@@ -284,59 +284,59 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="badge">3D Viewer</div>
         </div>
 
-        <!-- Анімації -->
+        <!-- Animations -->
         <div class="section">
-            <div class="section-title">Анімації</div>
+            <div class="section-title">Animations</div>
             <div class="btn-grid">
-                <button id="btn-walk" onclick="setAnimation('walk')">🚶 Ходьба</button>
-                <button id="btn-run" onclick="setAnimation('run')">🏃 Біг</button>
-                <button id="btn-spin" onclick="toggleSpin()">🔄 Оберт</button>
-                <button id="btn-idle" class="active" onclick="setAnimation('idle')">⏸️ Пауза</button>
+                <button id="btn-walk" onclick="setAnimation('walk')">🚶 Walk</button>
+                <button id="btn-run" onclick="setAnimation('run')">🏃 Run</button>
+                <button id="btn-spin" onclick="toggleSpin()">🔄 Rotate</button>
+                <button id="btn-idle" class="active" onclick="setAnimation('idle')">⏸️ Pause</button>
             </div>
         </div>
 
-        <!-- Ракурси камери -->
+        <!-- Camera Angles -->
         <div class="section">
-            <div class="section-title">Ракурси камери</div>
+            <div class="section-title">Camera Angles</div>
             <div class="btn-grid">
-                <button onclick="setCameraView('front')">Фронт</button>
-                <button onclick="setCameraView('back')">Спина ("S")</button>
-                <button onclick="setCameraView('left')">Профіль (лівий)</button>
-                <button onclick="setCameraView('right')">Профіль (правий)</button>
+                <button onclick="setCameraView('front')">Front</button>
+                <button onclick="setCameraView('back')">Back</button>
+                <button onclick="setCameraView('left')">Profile (Left)</button>
+                <button onclick="setCameraView('right')">Profile (Right)</button>
             </div>
         </div>
 
-        <!-- Шари скіна -->
+        <!-- Skin Layers -->
         <div class="section">
-            <div class="section-title">Керування шарами</div>
+            <div class="section-title">Layer Visibility</div>
             <div class="toggle-row">
-                <label for="tog-inner">Layer 1 (Основа)</label>
+                <label for="tog-inner">Layer 1 (Base Body)</label>
                 <input type="checkbox" id="tog-inner" checked onchange="updateLayers()">
             </div>
             <div class="toggle-row">
-                <label for="tog-outer">Layer 2 (3D-оверлей)</label>
+                <label for="tog-outer">Layer 2 (3D Overlay)</label>
                 <input type="checkbox" id="tog-outer" checked onchange="updateLayers()">
             </div>
         </div>
 
-        <!-- Синхронізація -->
+        <!-- Texture Sync -->
         <div class="section">
-            <div class="section-title">Синхронізація текстури</div>
-            <button onclick="reloadSkinManual()" style="width: 100%;">🔄 Оновити скін зараз</button>
+            <div class="section-title">Live Texture Sync</div>
+            <button onclick="reloadSkinManual()" style="width: 100%;">🔄 Refresh Skin Now</button>
             <div class="status-box">
                 <div class="status-indicator">
                     <div class="pulse-dot" id="live-dot"></div>
-                    <span id="live-text">Автооновлення активне</span>
+                    <span id="live-text">Live auto-reload active</span>
                 </div>
-                <div class="status-time" id="last-update">Останнє оновлення: щойно</div>
+                <div class="status-time" id="last-update">Last updated: Just now</div>
             </div>
         </div>
 
         <div class="footer">
-            Керування 3D:<br>
-            • Ліва кнопка миші: обертання<br>
-            • Права кнопка миші: переміщення (Pan)<br>
-            • Коліщатко: масштабування
+            3D Navigation:<br>
+            • Left Mouse: Rotate camera<br>
+            • Right Mouse: Pan view<br>
+            • Scroll Wheel: Zoom in / out
         </div>
     </div>
 
@@ -402,7 +402,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             makeVisible: true
                         }).then(() => {
                             updateLayers();
-                            document.getElementById("last-update").innerText = "Останнє оновлення: " + new Date().toLocaleTimeString();
+                            document.getElementById("last-update").innerText = "Last updated: " + new Date().toLocaleTimeString();
                         });
                     }
                 })
