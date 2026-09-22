@@ -151,17 +151,17 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         self.assertIn("audit-and-fix-skin", prompt_names)
 
     def test_sample_reference(self):
-        ref_path = os.path.join(os.path.dirname(__file__), "..", "references", "reference.jpeg")
-        if not os.path.exists(ref_path):
-            ref_path = "/mnt/storage/My/Projects/Skin/Reference Skin/reference.jpeg"
-        if not os.path.exists(ref_path):
-            return
+        # Create self-contained synthetic test reference image
+        tmp_ref = "/tmp/test_synthetic_ref.png"
+        from PIL import Image
+        img = Image.new("RGB", (40, 40), color=(142, 38, 222))
+        img.save(tmp_ref)
 
         # Test point sampling
         res_pt = self.call("skin_sample_reference", {
-            "image_path": ref_path,
-            "x": 0.15,
-            "y": 0.20
+            "image_path": tmp_ref,
+            "x": 0.5,
+            "y": 0.5
         })
         text_pt = res_pt.content[0].text
         self.assertIn("=== Sampled Point at", text_pt)
@@ -170,7 +170,7 @@ class TestSkinForgeMCPServer(unittest.TestCase):
 
         # Test region crop & palette extraction
         res_pal = self.call("skin_sample_reference", {
-            "image_path": ref_path,
+            "image_path": tmp_ref,
             "region": [0.11, 0.14, 0.21, 0.28],
             "num_colors": 6
         })
