@@ -170,15 +170,7 @@ def part_to_ascii(part_arr, tolerance=6):
 
 def canvas_to_ascii(canvas_or_path, tolerance=12, max_palette_size=40):
     """
-    Reverse-engineers an entire SkinCanvas into a global palette and part-by-part ASCII grids.
-    
-    Args:
-        canvas_or_path: SkinCanvas instance, image file path, or PIL.Image
-        tolerance: Color distance threshold for grouping similar colors (default: 12)
-        max_palette_size: Maximum number of colors in the global palette
-        
-    Returns:
-        (palette: dict[str, str], parts: dict[str, str])
+    Vectorized high-speed reverse-engineering of a skin canvas into a global palette and part ASCII grids.
     """
     if isinstance(canvas_or_path, str):
         from .canvas import SkinCanvas
@@ -199,12 +191,9 @@ def canvas_to_ascii(canvas_or_path, tolerance=12, max_palette_size=40):
 
     all_colors = []
     for name, part in canvas.parts.items():
-        h, w, _ = part.shape
-        for r in range(h):
-            for c in range(w):
-                rgba = part[r, c]
-                if rgba[3] >= 10:
-                    all_colors.append(tuple(rgba.tolist()))
+        opaque = part[part[:, :, 3] >= 10]
+        if len(opaque) > 0:
+            all_colors.extend(map(tuple, opaque.tolist()))
 
     from collections import Counter
     counts = Counter(all_colors)
@@ -212,12 +201,14 @@ def canvas_to_ascii(canvas_or_path, tolerance=12, max_palette_size=40):
     clusters = []
     palette = {".": "transparent"}
     char_idx = 0
+    tol_sq = tolerance * tolerance
+
     for rgba, count in counts.most_common():
+        r, g, b, a = rgba
         found = False
         for rep, ch in clusters:
-            dist = np.sqrt(np.sum((np.array(rep[:3], dtype=float) - np.array(rgba[:3], dtype=float)) ** 2))
-            alpha_diff = abs(int(rep[3]) - int(rgba[3]))
-            if dist <= tolerance and alpha_diff <= tolerance:
+            d_sq = (rep[0] - r)**2 + (rep[1] - g)**2 + (rep[2] - b)**2
+            if d_sq <= tol_sq and abs(rep[3] - a) <= tolerance:
                 found = True
                 break
         if not found and char_idx < max_palette_size:
@@ -226,27 +217,27 @@ def canvas_to_ascii(canvas_or_path, tolerance=12, max_palette_size=40):
             clusters.append((rgba, ch))
             palette[ch] = rgba_to_hex(rgba)
 
-    def get_char(rgba):
-        if rgba[3] < 10:
-            return "."
-        best_ch = "."
-        min_dist = 1e9
-        for rep, ch in clusters:
-            d = np.sqrt(np.sum((np.array(rep[:3], dtype=float) - np.array(rgba[:3], dtype=float)) ** 2))
-            if d < min_dist:
-                min_dist = d
-                best_ch = ch
-        return best_ch
+    if not clusters:
+        return {".": "transparent"}, {}
+
+    cluster_rgbs = np.array([c[0][:3] for c in clusters], dtype=np.int32)
+    cluster_chars = np.array([c[1] for c in clusters])
 
     parts_ascii = {}
     for name, part in canvas.parts.items():
         h, w, _ = part.shape
-        if np.all(part[:, :, 3] < 10):
+        alpha = part[:, :, 3]
+        if np.all(alpha < 10):
             continue
-        lines = []
-        for r in range(h):
-            line = "".join(get_char(part[r, c]) for c in range(w))
-            lines.append(line)
+
+        rgb = part[:, :, :3].astype(np.int32)
+        diff = cluster_rgbs[:, None, None, :] - rgb[None, :, :, :]
+        dists = np.sum(diff * diff, axis=-1)
+        best_indices = np.argmin(dists, axis=0)
+        assigned_chars = cluster_chars[best_indices]
+        assigned_chars[alpha < 10] = "."
+
+        lines = ["".join(assigned_chars[r]) for r in range(h)]
         parts_ascii[name] = "\n".join(lines)
 
     return palette, parts_ascii
