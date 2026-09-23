@@ -60,7 +60,7 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 
 ```
 SkinForge/
-├── LLM_GUIDE.md               # Architectural specification & prompt guide for AI models
+├── instructions.md            # System instructions & architectural guide for AI models / MCP clients
 ├── pyproject.toml             # Standard Python packaging metadata
 ├── README.md                  # Project overview & documentation
 ├── cli.py                     # Command-line interface

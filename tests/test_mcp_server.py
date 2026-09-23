@@ -333,6 +333,12 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         })
         self.assertIn("Rendered symbol 'cyber_s' on 'jacket_back'", res_sym.content[0].text)
 
+    def test_server_instructions(self):
+        self.assertIsNotNone(server.instructions)
+        self.assertIn("The 4 Golden Rules of Minecraft Skin Depth", server.instructions)
+        self.assertIn("UV Face Identifier Reference", server.instructions)
+        self.assertIn("Recommended Autonomous Workflow", server.instructions)
+
     def test_outfit_and_converter(self):
         self.call("skin_new", {"template": "base_body", "skin_tone": "fair"})
 

@@ -107,7 +107,24 @@ class SkinSession:
 
 
 session = SkinSession()
-server = MCPServer("skinforge")
+
+# Load instructions from instructions.md
+INSTRUCTIONS_PATH = os.path.join(PROJECT_ROOT, "instructions.md")
+if not os.path.exists(INSTRUCTIONS_PATH):
+    INSTRUCTIONS_PATH = os.path.join(os.path.dirname(__file__), "instructions.md")
+
+instructions_content = None
+if os.path.exists(INSTRUCTIONS_PATH):
+    try:
+        with open(INSTRUCTIONS_PATH, "r", encoding="utf-8") as f:
+            instructions_content = f.read()
+    except Exception:
+        pass
+
+server = MCPServer(
+    name="skinforge",
+    instructions=instructions_content,
+)
 
 
 def _image_to_content(im: Image.Image) -> types.ImageContent:
@@ -1461,7 +1478,7 @@ def get_uv_map_resource() -> str:
 
 @server.resource("skin://layer-rules")
 def get_layer_rules_resource() -> str:
-    """The 4 Golden Rules of Minecraft Skin Depth from LLM_GUIDE.md."""
+    """The 4 Golden Rules of Minecraft Skin Depth from instructions.md."""
     return (
         "THE 4 GOLDEN RULES OF MINECRAFT SKIN DEPTH:\n"
         "-------------------------------------------\n"
