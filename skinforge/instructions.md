@@ -51,6 +51,7 @@ Follow this lifecycle for predictable, defect-free skin generation:
 
 1. **Initialize or Load**:
    - `skin_new(template='base_body', skin_tone='fair', hair_color='#221c28', eye_color='#9a3cd4')` (populates 100% solid base, 0 holes).
+   - `skin_build(palette, parts, model_type="default", auto_fix=True)` to assemble a complete dual-layer skin from scratch or generative VLM in a single atomic call.
    - Or `skin_load(file_path)` to modify an existing skin.
    - Call `viewer_start(port=8080)` to start the 300ms live Three.js sync viewer if user wants live inspection.
 
@@ -88,4 +89,5 @@ Follow this lifecycle for predictable, defect-free skin generation:
 - **Recoloring**: Use `skin_adjust_hsv` (hue/saturation/brightness) or `skin_replace_color` (fuzzy color swap).
 - **Batching**: Group sequential edits into `skin_batch_actions` to execute in a single round-trip.
 - **Reference Sampling**: Extract colors from concept art directly via `skin_sample_reference(image_path, num_colors=8)`.
+- **Full Skin Generation / Assembly**: Use `skin_build(palette, parts, model_type="default", auto_fix=True)` to construct an entire dual-layer skin in a single atomic tool call (~1,200 tokens vs 20,000 for raw pixels).
 - **ASCII DSL**: Use `skin_set_part_ascii(part_name, ascii_grid, palette)` where `.` is always transparent, `#` is primary color. Built-in palettes available: `'TECHWEAR_CYBERPUNK'`, `'ANIME_SKIN'`, `'CASUAL_STREETWEAR'`, `'FANTASY_KNIGHT'`.

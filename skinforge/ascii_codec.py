@@ -166,3 +166,87 @@ def part_to_ascii(part_arr, tolerance=6):
 
     grid_str = "\n".join(lines)
     return grid_str, palette
+
+
+def canvas_to_ascii(canvas_or_path, tolerance=12, max_palette_size=40):
+    """
+    Reverse-engineers an entire SkinCanvas into a global palette and part-by-part ASCII grids.
+    
+    Args:
+        canvas_or_path: SkinCanvas instance, image file path, or PIL.Image
+        tolerance: Color distance threshold for grouping similar colors (default: 12)
+        max_palette_size: Maximum number of colors in the global palette
+        
+    Returns:
+        (palette: dict[str, str], parts: dict[str, str])
+    """
+    if isinstance(canvas_or_path, str):
+        from .canvas import SkinCanvas
+        canvas = SkinCanvas()
+        canvas.load_png(canvas_or_path)
+    elif hasattr(canvas_or_path, "parts"):
+        canvas = canvas_or_path
+    else:
+        from .canvas import SkinCanvas
+        from PIL import Image
+        canvas = SkinCanvas()
+        im = canvas_or_path if isinstance(canvas_or_path, Image.Image) else Image.fromarray(canvas_or_path)
+        im = im.convert("RGBA")
+        arr = np.array(im)
+        from .canvas import MINECRAFT_UV_MAP
+        for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
+            canvas.parts[name] = arr[v0:v1, u0:u1].copy()
+
+    all_colors = []
+    for name, part in canvas.parts.items():
+        h, w, _ = part.shape
+        for r in range(h):
+            for c in range(w):
+                rgba = part[r, c]
+                if rgba[3] >= 10:
+                    all_colors.append(tuple(rgba.tolist()))
+
+    from collections import Counter
+    counts = Counter(all_colors)
+
+    clusters = []
+    palette = {".": "transparent"}
+    char_idx = 0
+    for rgba, count in counts.most_common():
+        found = False
+        for rep, ch in clusters:
+            dist = np.sqrt(np.sum((np.array(rep[:3], dtype=float) - np.array(rgba[:3], dtype=float)) ** 2))
+            alpha_diff = abs(int(rep[3]) - int(rgba[3]))
+            if dist <= tolerance and alpha_diff <= tolerance:
+                found = True
+                break
+        if not found and char_idx < max_palette_size:
+            ch = ASCII_CHAR_POOL[char_idx] if char_idx < len(ASCII_CHAR_POOL) else chr(ord("a") + (char_idx % 26))
+            char_idx += 1
+            clusters.append((rgba, ch))
+            palette[ch] = rgba_to_hex(rgba)
+
+    def get_char(rgba):
+        if rgba[3] < 10:
+            return "."
+        best_ch = "."
+        min_dist = 1e9
+        for rep, ch in clusters:
+            d = np.sqrt(np.sum((np.array(rep[:3], dtype=float) - np.array(rgba[:3], dtype=float)) ** 2))
+            if d < min_dist:
+                min_dist = d
+                best_ch = ch
+        return best_ch
+
+    parts_ascii = {}
+    for name, part in canvas.parts.items():
+        h, w, _ = part.shape
+        if np.all(part[:, :, 3] < 10):
+            continue
+        lines = []
+        for r in range(h):
+            line = "".join(get_char(part[r, c]) for c in range(w))
+            lines.append(line)
+        parts_ascii[name] = "\n".join(lines)
+
+    return palette, parts_ascii

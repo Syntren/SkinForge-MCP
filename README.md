@@ -4,8 +4,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0%20Compliant-purple.svg)](https://modelcontextprotocol.io/)
-[![Tools](https://img.shields.io/badge/MCP%20Tools-44%20Native%20Tools-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-16%2F16%20Passed-success.svg)]()
+[![Tools](https://img.shields.io/badge/MCP%20Tools-45%20Native%20Tools-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-19%2F19%20Passed-success.svg)]()
 [![WebGL](https://img.shields.io/badge/Viewer-Three.js%20WebGL-orange.svg)]()
 
 SkinForge is an all-in-one professional toolkit designed for both **human skin artists** and **autonomous AI/LLM coding agents** (Antigravity, Gemini, Claude, GPT-4o, Cursor, Kilo) to create, sample, inspect, edit, audit, and visually verify Minecraft skins with true 3D dual-layer depth — **without requiring ad-hoc Python scripts**.
@@ -14,8 +14,9 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 
 ## 🌟 Key Features
 
-### 1. 44 Native MCP Tools for AI Agents
+### 1. 45 Native MCP Tools for AI Agents
 - **Model Context Protocol (MCP) v3**: Enables LLMs to design, recolor, audit, and verify skins directly over stdio.
+- **Full Skin Assembly & VLM Fine-Tuning (`skin_build`)**: Assembles complete 64×64 dual-layer skins in a single atomic call using a global palette and ASCII matrices (~1,200 tokens vs 20,000 for raw pixels), purpose-built for Vision-Language model fine-tuning.
 - **Direct Reference Sampling (`skin_sample_reference`)**: Samples exact colors or extracts dominant palettes from concept art (`reference.jpeg`) and screenshots without writing Python scripts.
 - **Multimodal Visual Feedback (`skin_render_3d`, `skin_render_2d`)**: Generates and returns base64 PNG turnaround images directly inside tool results for autonomous visual verification.
 

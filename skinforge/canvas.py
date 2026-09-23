@@ -206,6 +206,18 @@ class SkinCanvas:
                 src_y = min(src_h - 1, dy * src_h // h)
                 self.parts[name][dy, dx] = parsed[src_y, src_x]
 
+    def apply_ascii_skin(self, palette: dict, parts: dict):
+        """
+        Apply a full skin defined by a global palette and part ASCII grids.
+        Any omitted parts remain transparent/empty.
+        """
+        for name in self.parts:
+            if name in parts:
+                self.set_ascii(name, parts[name], palette)
+            else:
+                self.parts[name][:] = 0
+
+
     def apply_gradient(self, name, start_color, end_color, direction="vertical"):
         """
         Apply a smooth linear gradient across a part.

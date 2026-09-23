@@ -369,6 +369,33 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         self.assertEqual(session.model, "slim")
 
 
+
+    def test_skin_build_and_canvas_to_ascii(self):
+        from skinforge import canvas_to_ascii
+        from skinforge.canvas import SkinCanvas
+
+        src_path = os.path.join(os.path.dirname(__file__), "..", "skins", "skin_syntren.png")
+        self.assertTrue(os.path.exists(src_path))
+
+        orig_canvas = SkinCanvas()
+        orig_canvas.load_png(src_path)
+
+        palette, parts = canvas_to_ascii(orig_canvas, tolerance=12)
+        self.assertGreater(len(palette), 5)
+        self.assertGreater(len(parts), 30)
+
+        res = self.call("skin_build", {
+            "palette": palette,
+            "parts": parts,
+            "model_type": "default",
+            "auto_fix": True
+        })
+        self.assertIn("Skin successfully built", res.content[0].text)
+
+        val_res = self.call("skin_validate", {})
+        self.assertIn("Zero visual warnings", val_res.content[0].text)
+
+
 if __name__ == "__main__":
     unittest.main()
 

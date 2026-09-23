@@ -28,7 +28,7 @@ from .presets import (
     draw_sneakers,
     draw_headphones,
 )
-from .ascii_codec import normalize_color, rgba_to_hex, part_to_ascii
+from .ascii_codec import normalize_color, rgba_to_hex, part_to_ascii, canvas_to_ascii
 from .templates import create_base_body, SKIN_TONE_PALETTES
 from .sampler import sample_image
 from .seams import check_seams, align_seams
@@ -60,7 +60,7 @@ __all__ = [
     "draw_headphones",
     "normalize_color",
     "rgba_to_hex",
-    "part_to_ascii",
+    "part_to_ascii, canvas_to_ascii",
     "create_base_body",
     "SKIN_TONE_PALETTES",
     "sample_image",

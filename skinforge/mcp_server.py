@@ -17,7 +17,7 @@ import mcp.types as types
 from mcp.server.mcpserver import MCPServer
 
 from .canvas import SkinCanvas, MINECRAFT_UV_MAP
-from .ascii_codec import normalize_color, rgba_to_hex, part_to_ascii
+from .ascii_codec import normalize_color, rgba_to_hex, part_to_ascii, canvas_to_ascii
 from .templates import create_base_body, SKIN_TONE_PALETTES
 from .validator import SkinValidator
 from .sampler import sample_image
@@ -560,6 +560,50 @@ def skin_get_part_ascii(part_name: str, tolerance: int = 6) -> str:
         f"To edit this part: Modify the characters in the grid above and call 'skin_set_part_ascii'."
     )
 
+
+
+@server.tool()
+def skin_build(
+    palette: Dict[str, str],
+    parts: Dict[str, str],
+    model_type: str = "default",
+    auto_fix: bool = True,
+    save_path: Optional[str] = None
+) -> str:
+    """
+    Generate and assemble a complete 64x64 dual-layer Minecraft skin in a single atomic tool call
+    using an ASCII grid for each UV face with a shared color palette.
+
+    Args:
+        palette: Mapping from symbol characters to hex colors (e.g. {"#": "#1a1422", "=": "#4d3d5f", ".": "transparent"}).
+        parts: Dictionary of non-empty UV parts mapped to multiline ASCII grid strings (e.g. {"head_front": "...", "jacket_front": "..."}).
+        model_type: Player model geometry ("default" for Steve 4px arms, "slim" for Alex 3px arms).
+        auto_fix: Automatically heal Layer 1 holes (Rule 1) and sanitize Layer 2 floating profile pixels (Rule 2 & 3).
+        save_path: Optional file path to immediately export the 64x64 PNG and update turnaround previews.
+    """
+    session.canvas.push_undo()
+    session.canvas.model = model_type
+
+    session.canvas.apply_ascii_skin(palette, parts)
+
+    fix_summary = []
+    if auto_fix:
+        healed = session.canvas.heal_layer1_holes()
+        if healed:
+            fix_summary.append(f"Healed {healed} holes on Layer 1")
+        sanitized = session.canvas.sanitize_outer_layer()
+        if sanitized:
+            fix_summary.append(f"Sanitized {sanitized} floating pixels on Layer 2")
+
+    session.mark_dirty()
+
+    msg = f"Skin successfully built ({len(parts)} parts rendered, model: {model_type})."
+    if fix_summary:
+        msg += " Auto-fix: " + ", ".join(fix_summary) + "."
+    if save_path:
+        save_res = skin_save(file_path=save_path, update_previews=True)
+        msg += f" {save_res}"
+    return msg
 
 @server.tool()
 def skin_set_part_ascii(
