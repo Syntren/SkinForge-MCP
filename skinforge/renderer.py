@@ -378,7 +378,8 @@ def render_turntable_gif(skin_source, out_path, frames=16, fps=12, layer_mode="b
         yaw = -30 + i * (360.0 / frames)
         renderer.clear((18, 16, 24, 255))
         renderer.render_model(skin_arr, yaw_deg=yaw, pitch_deg=12, ox=200, oy=320, scale=9, layer_mode=layer_mode)
-        images.append(Image.fromarray(renderer.color_buf))
+        # Crucial: copy the underlying buffer so frames do not share identical memory
+        images.append(Image.fromarray(renderer.color_buf.copy()))
 
     duration_ms = int(1000.0 / fps)
     images[0].save(
@@ -386,7 +387,8 @@ def render_turntable_gif(skin_source, out_path, frames=16, fps=12, layer_mode="b
         save_all=True,
         append_images=images[1:],
         duration=duration_ms,
-        loop=0
+        loop=0,
+        disposal=2
     )
     return out_path
 

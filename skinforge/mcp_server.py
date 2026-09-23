@@ -250,7 +250,9 @@ def skin_save(
                 render_composite_2d(target, p_2d)
                 render_3d_turnaround(target, p_3d)
                 render_bottom_up(target, p_bu)
-                extra_msgs.append(f"Rendered previews in: '{base_dir}' (2D composite, 3D turnaround, bottom-up)")
+                p_gif = os.path.join(base_dir, "turntable_360.gif")
+                render_turntable_gif(target, p_gif, frames=16, fps=12)
+                extra_msgs.append(f"Rendered previews in: '{base_dir}' (2D composite, 3D turnaround, bottom-up, turntable 360 GIF)")
             except Exception as ex:
                 extra_msgs.append(f"Preview render notice: {ex}")
 
@@ -496,23 +498,31 @@ def skin_render_turntable_gif(
     fps: int = 12,
     layer_mode: str = "both",
     out_path: Optional[str] = None
-) -> str:
+) -> List[Any]:
     """
     Generate an animated 360-degree turntable rotation GIF of the player model.
     Args:
         frames: Number of rotation frames (default 16).
         fps: Animation frames per second (default 12).
         layer_mode: 'both', 'base', or 'outer'.
-        out_path: Output path for GIF (default 'previews/turntable_360.gif').
+        out_path: Output path for GIF (defaults to project output directory or 'previews/turntable_360.gif').
     """
-    out = out_path or "previews/turntable_360.gif"
+    if not out_path and session.file_path:
+        out = os.path.join(os.path.dirname(session.file_path), "turntable_360.gif")
+    else:
+        out = out_path or os.path.join(PROJECT_ROOT, "previews", "turntable_360.gif")
     out = os.path.abspath(os.path.expanduser(out))
     os.makedirs(os.path.dirname(out), exist_ok=True)
     try:
         render_turntable_gif(session.canvas, out, frames=frames, fps=fps, layer_mode=layer_mode)
-        return f"Successfully generated {frames}-frame turntable GIF at: '{out}' ({os.path.getsize(out)} bytes)."
+        with open(out, "rb") as f:
+            b64_str = base64.b64encode(f.read()).decode("utf-8")
+        return [
+            types.TextContent(type="text", text=f"Successfully generated {frames}-frame turntable GIF at: '{out}' ({os.path.getsize(out)} bytes)."),
+            types.ImageContent(type="image", data=b64_str, mime_type="image/gif")
+        ]
     except Exception as e:
-        return f"Error generating turntable GIF: {str(e)}"
+        return [types.TextContent(type="text", text=f"Error generating turntable GIF: {str(e)}")]
 
 
 # ============================================================================

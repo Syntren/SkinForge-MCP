@@ -333,6 +333,19 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         })
         self.assertIn("Rendered symbol 'cyber_s' on 'jacket_back'", res_sym.content[0].text)
 
+    def test_turntable_gif_animation(self):
+        self.call("skin_new", {"template": "base_body", "skin_tone": "fair"})
+        gif_out = os.path.join(os.path.dirname(__file__), "test_turntable_test.gif")
+        res = self.call("skin_render_turntable_gif", {"frames": 16, "fps": 12, "out_path": gif_out})
+        self.assertTrue(len(res.content) >= 1)
+        self.assertIn("Successfully generated 16-frame turntable GIF", res.content[0].text)
+        from PIL import Image
+        with Image.open(gif_out) as im:
+            self.assertTrue(getattr(im, "is_animated", False))
+            self.assertEqual(getattr(im, "n_frames", 1), 16)
+        if os.path.exists(gif_out):
+            os.remove(gif_out)
+
     def test_server_instructions(self):
         self.assertIsNotNone(server.instructions)
         self.assertIn("The 4 Golden Rules of Minecraft Skin Depth", server.instructions)
