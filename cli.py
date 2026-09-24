@@ -12,6 +12,9 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from skinforge import (
+    get_rag,
+    assemble_skin,
+    compute_aesthetic_score,
     SkinCanvas,
     render_composite_2d,
     render_3d_turnaround,
@@ -72,6 +75,31 @@ def main():
 
     # MCP server command
     p_mcp = subparsers.add_parser("mcp", help="Start SkinForge Model Context Protocol (MCP) server for LLMs")
+
+    # Lego Constructor Assemble command
+    p_assemble = subparsers.add_parser("assemble", help="Lego Constructor: Assemble modular skin components into a unified character")
+    p_assemble.add_argument("--hair", default=None, help="Skin ID or PNG path for hair")
+    p_assemble.add_argument("--face", default=None, help="Skin ID or PNG path for face/eyes")
+    p_assemble.add_argument("--torso", default=None, help="Skin ID or PNG path for torso/shirt")
+    p_assemble.add_argument("--arms", default=None, help="Skin ID or PNG path for arms/sleeves")
+    p_assemble.add_argument("--legs", default=None, help="Skin ID or PNG path for legs/pants")
+    p_assemble.add_argument("--outfit", default=None, help="Skin ID or PNG path for full outfit (torso, arms, legs)")
+    p_assemble.add_argument("--base", default=None, help="Optional base skin ID or PNG to inherit unspecified parts")
+    p_assemble.add_argument("--out", default="assembled_skin.png", help="Output PNG path (default: assembled_skin.png)")
+    p_assemble.add_argument("--preview", action="store_true", help="Also generate 3D turnaround and 2D composite previews")
+
+    # Search command
+    p_search = subparsers.add_parser("search", help="Search 900k+ Minecraft skins database")
+    p_search.add_argument("query", help="Text search query")
+    p_search.add_argument("--limit", type=int, default=5, help="Maximum results to return")
+    p_search.add_argument("--min-quality", choices=["all", "low", "medium", "high"], default="medium", help="Minimum aesthetic quality tier")
+
+    # Part search command
+    p_part_search = subparsers.add_parser("part-search", help="Search for specific anatomical module (hair, face, torso, arms, legs)")
+    p_part_search.add_argument("category", choices=["hair", "face", "torso", "arms", "legs", "outfit"], help="Anatomical module category")
+    p_part_search.add_argument("query", help="Text search query")
+    p_part_search.add_argument("--limit", type=int, default=5, help="Maximum results to return")
+    p_part_search.add_argument("--min-quality", choices=["all", "low", "medium", "high"], default="medium", help="Minimum aesthetic quality tier")
 
     args = parser.parse_args()
 
@@ -134,6 +162,69 @@ def main():
     elif args.command == "mcp":
         from skinforge.mcp_server import main as run_mcp
         run_mcp()
+
+    elif args.command == "assemble":
+        rag = get_rag()
+        components = {}
+        for mod in ["hair", "face", "torso", "arms", "legs", "outfit"]:
+            val = getattr(args, mod, None)
+            if val:
+                components[mod] = val
+
+        if not components:
+            print("[!] Error: No components specified. Use --hair, --torso, --legs, etc.")
+            sys.exit(1)
+
+        print(f"[*] Assembling skin from modules: {list(components.keys())}...")
+        base_c = None
+        if args.base:
+            base_c = SkinCanvas()
+            if os.path.exists(args.base):
+                base_c.load_png(args.base)
+            else:
+                s_data = rag.get_skin(args.base, as_canvas=True, as_ascii=False)
+                if s_data and "canvas" in s_data:
+                    base_c = s_data["canvas"]
+
+        assembled_canvas, summary = rag.assemble_modules(
+            components=components,
+            base_canvas=base_c,
+            auto_blend_seams=True,
+            auto_fix=True
+        )
+
+        assembled_canvas.export_png(args.out)
+        print(f"[+] Successfully assembled skin saved to '{args.out}'!")
+        print(f"    - Aesthetic Score: {summary.get('aesthetic_score')} ({summary.get('aesthetic_tier')})")
+        print(f"    - Applied Modules: {', '.join(summary.get('applied_modules', []))}")
+        print(f"    - Seam issues detected & healed: {summary.get('seam_issues_detected', 0)}")
+
+        if args.preview:
+            p3d = os.path.splitext(args.out)[0] + "_3d.png"
+            p2d = os.path.splitext(args.out)[0] + "_2d.png"
+            render_3d_turnaround(assembled_canvas, p3d)
+            render_composite_2d(assembled_canvas, p2d)
+            print(f"[+] Generated previews: '{p3d}' and '{p2d}'")
+
+    elif args.command == "search":
+        rag = get_rag()
+        if not rag.is_available:
+            print("[!] RAG SQLite database is not available.")
+            sys.exit(1)
+        results = rag.search(args.query, limit=args.limit, min_quality=args.min_quality, render_previews=False)
+        print(f"[*] Found {len(results)} skins matching '{args.query}' (min quality: {args.min_quality}):")
+        for i, r in enumerate(results, 1):
+            print(f"  {i}. [{r['skin_id']}] {r['title'] or r['caption'][:60]} (Quality: {r['quality_score']}, Tier: {r['quality_tier']})")
+
+    elif args.command == "part-search":
+        rag = get_rag()
+        if not rag.is_available:
+            print("[!] RAG SQLite database is not available.")
+            sys.exit(1)
+        results = rag.part_search(args.category, args.query, limit=args.limit, min_quality=args.min_quality, render_previews=False)
+        print(f"[*] Found {len(results)} {args.category} modules matching '{args.query}':")
+        for i, r in enumerate(results, 1):
+            print(f"  {i}. [{r['skin_id']}] {r['caption'][:60]} (Quality: {r['quality_score']}, Tier: {r['quality_tier']})")
 
     else:
         parser.print_help()

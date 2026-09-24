@@ -368,10 +368,15 @@ class SkinRAG:
             if isinstance(src, SkinCanvas):
                 resolved_sources[mod_name] = src
             elif isinstance(src, str):
-                skin_data = self.get_skin(src, as_canvas=True, as_ascii=False)
-                if not skin_data or "canvas" not in skin_data:
-                    raise ValueError(f"Component '{mod_name}' references unknown skin_id: '{src}'")
-                resolved_sources[mod_name] = skin_data["canvas"]
+                if os.path.exists(src):
+                    c = SkinCanvas()
+                    c.load_png(src)
+                    resolved_sources[mod_name] = c
+                else:
+                    skin_data = self.get_skin(src, as_canvas=True, as_ascii=False)
+                    if not skin_data or "canvas" not in skin_data:
+                        raise ValueError(f"Component '{mod_name}' references unknown skin_id or file: '{src}'")
+                    resolved_sources[mod_name] = skin_data["canvas"]
 
         assembled, summary = assemble_skin(
             sources=resolved_sources,

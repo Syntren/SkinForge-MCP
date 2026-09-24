@@ -13,9 +13,12 @@ import socket
 import base64
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
 import threading
+from skinforge import SkinCanvas, get_rag, compute_aesthetic_score
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BASE_DIR)
 PARENT_DIR = os.path.dirname(BASE_DIR)
 
 def get_skin_path():
@@ -271,6 +274,172 @@ HTML_PAGE = """<!DOCTYPE html>
             text-align: center;
             line-height: 1.5;
         }
+
+        /* Tabs Bar & Lego Constructor UI */
+        .tabs-bar {
+            display: flex;
+            background: #14111f;
+            border-radius: 8px;
+            padding: 3px;
+            border: 1px solid var(--border);
+            gap: 4px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 8px 6px;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: 6px;
+            border: none;
+            background: transparent;
+            color: var(--text-dim);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab-btn.active {
+            background: var(--neon);
+            color: #fff;
+            box-shadow: 0 0 10px rgba(154, 50, 220, 0.4);
+        }
+
+        .tab-content {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .mod-box {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: #13111c;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px;
+        }
+
+        .mod-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .mod-input-row {
+            display: flex;
+            gap: 6px;
+        }
+
+        .mod-input {
+            flex: 1;
+            background: #1c1828;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: #fff;
+            padding: 6px 8px;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .mod-input:focus {
+            border-color: var(--neon-bright);
+        }
+
+        .mod-btn {
+            padding: 6px 10px;
+            font-size: 11px;
+            background: #252033;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        .mod-btn:hover {
+            border-color: var(--neon);
+            color: #fff;
+        }
+
+        .mod-results {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 100px;
+            overflow-y: auto;
+            margin-top: 4px;
+        }
+
+        .mod-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 8px;
+            background: #1a1626;
+            border: 1px solid #2e2640;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .mod-item:hover {
+            border-color: var(--neon);
+            background: #251d38;
+        }
+
+        .mod-item.selected {
+            border-color: var(--neon-bright);
+            background: rgba(154, 50, 220, 0.3);
+            color: #fff;
+            font-weight: 600;
+        }
+
+        .btn-assemble {
+            background: linear-gradient(135deg, #af36f8 0%, #7b1fa2 100%);
+            color: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 13px;
+            border: 1px solid #c05cff;
+            box-shadow: 0 0 16px rgba(175, 54, 248, 0.4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .btn-assemble:hover {
+            filter: brightness(1.15);
+            transform: translateY(-1px);
+        }
+
+        .score-box {
+            background: #14111f;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 11px;
+        }
+
+        .score-badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: 700;
+            background: #10b981;
+            color: #000;
+        }
     </style>
 </head>
 <body>
@@ -283,6 +452,15 @@ HTML_PAGE = """<!DOCTYPE html>
             <h1>Skin<span>Forge</span></h1>
             <div class="badge">3D Viewer</div>
         </div>
+
+        <!-- Mode Tabs -->
+        <div class="tabs-bar">
+            <button id="tab-btn-controls" class="tab-btn active" onclick="switchTab('controls')">🕹️ 3D Controls</button>
+            <button id="tab-btn-lego" class="tab-btn" onclick="switchTab('lego')">🧩 Lego Constructor</button>
+        </div>
+
+        <!-- Tab 1: 3D Controls -->
+        <div id="tab-controls-content" class="tab-content">
 
         <!-- Animations -->
         <div class="section">
@@ -331,6 +509,78 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="status-time" id="last-update">Last updated: Just now</div>
             </div>
         </div>
+
+        </div><!-- End tab-controls-content -->
+
+        <!-- Tab 2: Lego Constructor -->
+        <div id="tab-lego-content" class="tab-content" style="display: none;">
+            <!-- Hair Module -->
+            <div class="mod-box">
+                <div class="mod-header">
+                    <span>💇 Hair / Hairstyle</span>
+                    <span id="sel-hair" style="color: var(--neon-bright); font-size: 10px;">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-hair" class="mod-input" placeholder="e.g. purple anime, ponytail" onkeydown="if(event.key==='Enter') searchModule('hair')">
+                    <button class="mod-btn" onclick="searchModule('hair')">Find</button>
+                </div>
+                <div id="results-hair" class="mod-results"></div>
+            </div>
+
+            <!-- Face Module -->
+            <div class="mod-box">
+                <div class="mod-header">
+                    <span>👀 Face / Eyes</span>
+                    <span id="sel-face" style="color: var(--neon-bright); font-size: 10px;">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-face" class="mod-input" placeholder="e.g. violet eyes, mask" onkeydown="if(event.key==='Enter') searchModule('face')">
+                    <button class="mod-btn" onclick="searchModule('face')">Find</button>
+                </div>
+                <div id="results-face" class="mod-results"></div>
+            </div>
+
+            <!-- Torso Module -->
+            <div class="mod-box">
+                <div class="mod-header">
+                    <span>👔 Torso / Outfit</span>
+                    <span id="sel-torso" style="color: var(--neon-bright); font-size: 10px;">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-torso" class="mod-input" placeholder="e.g. tuxedo, hoodie, suit" onkeydown="if(event.key==='Enter') searchModule('torso')">
+                    <button class="mod-btn" onclick="searchModule('torso')">Find</button>
+                </div>
+                <div id="results-torso" class="mod-results"></div>
+            </div>
+
+            <!-- Legs Module -->
+            <div class="mod-box">
+                <div class="mod-header">
+                    <span>👖 Legs / Pants</span>
+                    <span id="sel-legs" style="color: var(--neon-bright); font-size: 10px;">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-legs" class="mod-input" placeholder="e.g. tailored pants, cargo" onkeydown="if(event.key==='Enter') searchModule('legs')">
+                    <button class="mod-btn" onclick="searchModule('legs')">Find</button>
+                </div>
+                <div id="results-legs" class="mod-results"></div>
+            </div>
+
+            <!-- Assemble Button -->
+            <button class="btn-assemble" onclick="assembleCharacter()">
+                ⚡ Assemble & Harmonize
+            </button>
+
+            <!-- Quality Score Display -->
+            <div class="score-box" id="lego-score-box">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600;">Aesthetic Score</span>
+                    <span class="score-badge" id="lego-score-badge">Top Tier</span>
+                </div>
+                <div style="font-size: 16px; font-weight: 700; color: #fff;" id="lego-score-val">1.0 / 1.0</div>
+                <div style="color: var(--text-dim); font-size: 10px;" id="lego-score-details">3D Relief: 28% | Seams: 0 errors</div>
+            </div>
+        </div><!-- End tab-lego-content -->
 
         <div class="footer">
             3D Navigation:<br>
@@ -521,6 +771,92 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
+        
+        const activeModules = {};
+
+        function switchTab(tab) {
+            document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+            if (tab === 'controls') {
+                document.getElementById("tab-btn-controls").classList.add("active");
+                document.getElementById("tab-controls-content").style.display = "flex";
+                document.getElementById("tab-lego-content").style.display = "none";
+            } else {
+                document.getElementById("tab-btn-lego").classList.add("active");
+                document.getElementById("tab-controls-content").style.display = "none";
+                document.getElementById("tab-lego-content").style.display = "flex";
+            }
+        }
+
+        async function searchModule(category) {
+            const input = document.getElementById("input-" + category);
+            const q = input.value.trim();
+            if (!q) return;
+
+            const resDiv = document.getElementById("results-" + category);
+            resDiv.innerHTML = "<div style='color: var(--text-dim); padding: 4px;'>Searching 900k skins...</div>";
+
+            try {
+                const resp = await fetch("/api/search_parts?category=" + encodeURIComponent(category) + "&q=" + encodeURIComponent(q));
+                const data = await resp.json();
+                if (data.results && data.results.length > 0) {
+                    resDiv.innerHTML = "";
+                    data.results.forEach((r, idx) => {
+                        const item = document.createElement("div");
+                        item.className = "mod-item" + (activeModules[category] === r.skin_id ? " selected" : "");
+                        item.innerHTML = `<span>#${idx+1} ${r.title || r.caption.substring(0, 24)}...</span><span style='color: #10b981; font-size: 10px;'>★ ${r.quality_score}</span>`;
+                        item.onclick = () => selectModule(category, r.skin_id, r.title || ('#' + (idx+1)));
+                        resDiv.appendChild(item);
+                    });
+                } else {
+                    resDiv.innerHTML = "<div style='color: var(--text-dim); padding: 4px;'>No modules found.</div>";
+                }
+            } catch (err) {
+                resDiv.innerHTML = "<div style='color: #ef4444; padding: 4px;'>Error searching.</div>";
+            }
+        }
+
+        function selectModule(category, skinId, label) {
+            activeModules[category] = skinId;
+            document.getElementById("sel-" + category).innerText = label;
+            const resDiv = document.getElementById("results-" + category);
+            resDiv.querySelectorAll(".mod-item").forEach(el => el.classList.remove("selected"));
+            event.currentTarget.classList.add("selected");
+        }
+
+        async function assembleCharacter() {
+            if (Object.keys(activeModules).length === 0) {
+                alert("Please select at least one module (Hair, Face, Torso, or Legs) to assemble!");
+                return;
+            }
+
+            const btn = document.querySelector(".btn-assemble");
+            const originalText = btn.innerHTML;
+            btn.innerHTML = "⏳ Assembling & Blending...";
+            btn.style.opacity = "0.7";
+
+            try {
+                const resp = await fetch("/api/assemble", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ components: activeModules })
+                });
+                const res = await resp.json();
+                if (res.status === "success") {
+                    document.getElementById("lego-score-val").innerText = res.aesthetic_score + " / 1.0";
+                    document.getElementById("lego-score-badge").innerText = res.aesthetic_tier;
+                    document.getElementById("lego-score-details").innerText = "Applied: " + res.applied_modules.join(", ") + " | Seams healed: " + res.seam_issues;
+                    loadSkinFromSource();
+                } else {
+                    alert("Assembly error: " + (res.error || "Unknown"));
+                }
+            } catch (err) {
+                alert("Error calling assemble API: " + err);
+            } finally {
+                btn.innerHTML = originalText;
+                btn.style.opacity = "1.0";
+            }
+        }
+    
         window.onload = initViewer;
     </script>
 </body>
@@ -597,6 +933,44 @@ class SkinViewerServer(BaseHTTPRequestHandler):
             if not head_only:
                 self.wfile.write(payload)
 
+        elif self.path.startswith("/api/search_parts"):
+            query_params = parse_qs(urlparse(self.path).query)
+            category = query_params.get("category", ["hair"])[0]
+            q = query_params.get("q", [""])[0]
+            limit = int(query_params.get("limit", [6])[0])
+            rag = get_rag()
+            if not rag.is_available:
+                payload = json.dumps({"results": []}).encode("utf-8")
+            else:
+                try:
+                    results = rag.part_search(category, q, limit=limit, min_quality="low", render_previews=False)
+                    payload = json.dumps({"results": results}).encode("utf-8")
+                except Exception as e:
+                    payload = json.dumps({"error": str(e), "results": []}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors_headers()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(payload)
+
+        elif self.path.startswith("/api/aesthetic_score"):
+            if os.path.exists(skin_path):
+                c = SkinCanvas()
+                c.load_png(skin_path)
+                score_info = compute_aesthetic_score(c)
+                payload = json.dumps(score_info).encode("utf-8")
+            else:
+                payload = json.dumps({"score": 0.0, "tier": "unknown"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors_headers()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(payload)
+
         elif self.path.startswith("/static/skinview3d.bundle.js"):
             if os.path.exists(bundle_path):
                 with open(bundle_path, "rb") as f:
@@ -611,6 +985,50 @@ class SkinViewerServer(BaseHTTPRequestHandler):
                     self.wfile.write(data)
             else:
                 self.send_error(404, "Static bundle not found")
+        else:
+            self.send_error(404, "Not Found")
+
+    def do_POST(self):
+        skin_path = get_skin_path()
+        if self.path == "/api/assemble":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+                components = data.get("components", {})
+                rag = get_rag()
+                
+                base_c = None
+                if os.path.exists(skin_path):
+                    base_c = SkinCanvas()
+                    base_c.load_png(skin_path)
+
+                target_canvas, summary = rag.assemble_modules(
+                    components=components,
+                    base_canvas=base_c,
+                    auto_blend_seams=True,
+                    auto_fix=True
+                )
+                
+                target_canvas.export_png(skin_path)
+                
+                payload = json.dumps({
+                    "status": "success",
+                    "aesthetic_score": summary.get("aesthetic_score", 0.0),
+                    "aesthetic_tier": summary.get("aesthetic_tier", "unknown"),
+                    "seam_issues": summary.get("seam_issues_detected", 0),
+                    "applied_modules": summary.get("applied_modules", [])
+                }).encode("utf-8")
+                self.send_response(200)
+            except Exception as e:
+                payload = json.dumps({"status": "error", "error": str(e)}).encode("utf-8")
+                self.send_response(500)
+
+            self.send_header("Content-Type", "application/json")
+            self.send_cors_headers()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
         else:
             self.send_error(404, "Not Found")
 
