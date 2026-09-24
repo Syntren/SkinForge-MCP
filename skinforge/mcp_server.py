@@ -567,6 +567,7 @@ def skin_get_part_ascii(part_name: str, tolerance: int = 6) -> str:
 def skin_search(
     query: str,
     limit: int = 5,
+    min_quality: str = "medium",
     render_previews: bool = True
 ) -> str:
     """
@@ -580,7 +581,7 @@ def skin_search(
     """
     from .rag import get_rag
     rag = get_rag()
-    results = rag.search(query=query, limit=min(limit, 20), render_previews=render_previews)
+    results = rag.search(query=query, limit=min(limit, 20), min_quality=min_quality, render_previews=render_previews)
     if not results:
         return json.dumps({
             "status": "empty",
@@ -692,6 +693,131 @@ def skin_rag_status() -> str:
         "database_path": str(rag.db_path),
         "database_size_mb": round(os.path.getsize(rag.db_path) / (1024 * 1024), 2) if os.path.exists(rag.db_path) else 0
     }, indent=2)
+
+@server.tool()
+def skin_part_search(
+    category: str,
+    query: str,
+    limit: int = 5,
+    min_quality: str = "medium",
+    render_previews: bool = True
+) -> str:
+    """
+    Search for specific anatomical components (hair, face, torso, arms, legs, outfit)
+    and render isolated 3D component previews on a neutral mannequin for modular Lego assembly.
+
+    Args:
+        category: Anatomical module ('hair', 'face', 'torso', 'arms', 'legs', 'head', 'outfit').
+        query: Descriptive keywords (e.g. 'anime messy bangs', 'business suit tie', 'sneakers').
+        limit: Max candidates to return (default: 5).
+        min_quality: 'all', 'low', 'medium', or 'high'.
+        render_previews: Whether to render isolated 3D previews on mannequin (default: True).
+    """
+    from .rag import get_rag
+    rag = get_rag()
+    try:
+        results = rag.part_search(
+            category=category,
+            query=query,
+            limit=limit,
+            min_quality=min_quality,
+            render_previews=render_previews
+        )
+        return json.dumps({
+            "status": "success",
+            "category": category,
+            "query": query,
+            "total_results": len(results),
+            "results": results
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def skin_assemble(
+    components: Dict[str, str],
+    auto_blend_seams: bool = True,
+    auto_fix: bool = True
+) -> str:
+    """
+    Lego Constructor: Assemble a complete Minecraft skin from modular component sources.
+    Loads the assembled skin directly into the active editing session with boundary seam blending.
+
+    Args:
+        components: Dict mapping module names ('hair', 'face', 'torso', 'arms', 'legs', 'outfit')
+                    to either a RAG skin_id (e.g. 'skin21181765flamez-suit') or 'active' (to keep current part).
+        auto_blend_seams: Automatically blend texture seams across anatomical joints (default: True).
+        auto_fix: Automatically heal Layer 1 holes and sanitize Layer 2 depth (default: True).
+    """
+    from .rag import get_rag
+    rag = get_rag()
+    try:
+        resolved_components = {}
+        for mod, src in components.items():
+            if src == "active":
+                resolved_components[mod] = session.canvas
+            else:
+                resolved_components[mod] = src
+
+        assembled_canvas, summary = rag.assemble_modules(
+            components=resolved_components,
+            base_canvas=session.canvas,
+            auto_blend_seams=auto_blend_seams,
+            auto_fix=auto_fix
+        )
+        session.canvas = assembled_canvas
+        session.mark_dirty()
+
+        return json.dumps({
+            "status": "success",
+            "message": f"Successfully assembled skin from {list(components.keys())}.",
+            "summary": summary,
+            "preview_3d_path": summary.get("preview_3d_path")
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def skin_search_by_image(
+    image_path: str,
+    limit: int = 5,
+    min_quality: str = "medium",
+    render_previews: bool = True
+) -> str:
+    """
+    Visual Reference Search: Find Minecraft skins that visually match a concept art image,
+    reference photo, or character drawing using spatial-color pyramid feature matching (LAB color space).
+
+    Args:
+        image_path: Absolute or relative path to reference image on disk.
+        limit: Number of visually similar candidate skins to return (default: 5).
+        min_quality: 'all', 'low', 'medium', or 'high'.
+        render_previews: Whether to render 3D turnaround previews (default: True).
+    """
+    import os
+    if not os.path.exists(image_path):
+        return json.dumps({"error": f"Reference image not found: {image_path}"})
+
+    from .rag import get_rag
+    rag = get_rag()
+    try:
+        results = rag.search_by_image(
+            image_input=image_path,
+            limit=limit,
+            min_quality=min_quality,
+            render_previews=render_previews
+        )
+        return json.dumps({
+            "status": "success",
+            "query_image": image_path,
+            "total_results": len(results),
+            "results": results
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
 
 
 

@@ -2,6 +2,8 @@
 SkinForge - Autonomous Minecraft Skin Authoring, Inspection & 3D/2D Rendering Toolkit.
 """
 
+__version__ = "1.0.0"
+
 from .canvas import SkinCanvas, MINECRAFT_UV_MAP
 from .renderer import (
     Minecraft3DRenderer,
@@ -12,7 +14,7 @@ from .renderer import (
     render_turntable_gif,
     render_bottom_up,
 )
-from .validator import SkinValidator
+from .validator import SkinValidator, compute_aesthetic_score
 from .palettes import (
     TECHWEAR_CYBERPUNK,
     ANIME_SKIN,
@@ -36,8 +38,11 @@ from .typography import draw_text, draw_symbol
 from .outfits import apply_outfit
 from .converter import convert_skin_model
 from .rag import SkinRAG, get_rag
+from .modular import ANATOMICAL_MODULES, assemble_skin, render_isolated_module
+from .vision import extract_visual_features, compute_visual_similarity
 
 __all__ = [
+    "__version__",
     "SkinCanvas",
     "MINECRAFT_UV_MAP",
     "Minecraft3DRenderer",
@@ -48,6 +53,7 @@ __all__ = [
     "render_turntable_gif",
     "render_bottom_up",
     "SkinValidator",
+    "compute_aesthetic_score",
     "TECHWEAR_CYBERPUNK",
     "ANIME_SKIN",
     "CASUAL_STREETWEAR",
@@ -74,4 +80,9 @@ __all__ = [
     "draw_symbol",
     "apply_outfit",
     "convert_skin_model",
+    "ANATOMICAL_MODULES",
+    "assemble_skin",
+    "render_isolated_module",
+    "extract_visual_features",
+    "compute_visual_similarity",
 ]

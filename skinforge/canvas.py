@@ -119,12 +119,21 @@ class SkinCanvas:
         for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
             self.parts[name] = arr[v0:v1, u0:u1].copy()
 
-    def export_png(self, path):
-        """Export all parts into a clean 64x64 RGBA PNG."""
+    def to_array(self) -> np.ndarray:
+        """Assemble all parts into a 64x64x4 RGBA numpy array."""
         arr = np.zeros((64, 64, 4), dtype=np.uint8)
         for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
-            arr[v0:v1, u0:u1] = self.parts[name]
-        im = Image.fromarray(arr)
+            if name in self.parts:
+                arr[v0:v1, u0:u1] = self.parts[name]
+        return arr
+
+    def to_image(self) -> Image.Image:
+        """Assemble all parts into a 64x64 RGBA PIL Image."""
+        return Image.fromarray(self.to_array(), "RGBA")
+
+    def export_png(self, path):
+        """Export all parts into a clean 64x64 RGBA PNG."""
+        im = self.to_image()
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         im.save(path)
         return path

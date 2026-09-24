@@ -50,18 +50,28 @@ Always use these exact string identifiers for `part_name` parameters:
 SkinForge MCP includes a built-in search engine over **900,000+ captioned Minecraft skins** powered by SQLite FTS5 (BM25 ranking).
 When asked to design a skin (e.g. *"cyberpunk samurai"*, *"purple scarf ninja"*, *"steampunk engineer"*, *"goth girl"*), **ALWAYS start by searching the RAG database**!
 
-### Available RAG Tools:
-1. `skin_search(query, limit=5, render_previews=True)`:
+### Available RAG & Modular Construction Tools:
+1. `skin_search(query, limit=5, render_previews=True, min_quality="medium")`:
    - Searches 900k+ human-crafted skins using BM25 relevance ranking.
+   - `min_quality`: Optional quality filter ("low", "medium", "high", "top_tier"). Filters out flat, unshaded, or corrupted skins using the Aesthetic Craftsmanship Scorer.
    - Automatically renders 3D turnaround previews (`preview_3d_path`) for visual inspection by multimodal agents.
-   - Returns skin IDs, captions, rank scores, and whether the skin uses Layer 2 outer relief.
-2. `skin_get_reference(skin_id, load_to_canvas=True/False, as_ascii=True)`:
+   - Returns skin IDs, captions, rank scores, aesthetic score, and layer metrics.
+2. `skin_part_search(module_name, query, limit=5, render_previews=True, min_quality="medium")`:
+   - Searches specifically for individual anatomical modules: `"hair"`, `"face"`, `"torso"`, `"arms"`, `"legs"`, `"outfit"`.
+   - Renders 3D previews of the isolated module on a neutral dark mannequin for unambiguous visual evaluation.
+3. `skin_assemble(hair_id=None, face_id=None, torso_id=None, arms_id=None, legs_id=None, outfit_id=None, base_skin_id=None, auto_align_seams=True, auto_fix=True)`:
+   - **Modular Lego Constructor Engine**: Combines chosen components from different skins into a unified character.
+   - Performs smart separation of hair and face across front/back/top/flanks.
+   - Automatically harmonizes seam continuity across joints and validates depth rules.
+4. `skin_search_by_image(image_path, limit=5, render_previews=True)`:
+   - Visual concept & style matching using 299-dimensional spatial-color pyramid representations in LAB color space.
+5. `skin_get_reference(skin_id, load_to_canvas=True/False, as_ascii=True)`:
    - Retrieves the full 2D ASCII grids and color palette of a skin.
    - Set `load_to_canvas=True` to immediately load this high-quality skin into your active editing session!
-3. `skin_remix(base_skin_id, overlay_skin_id, parts_to_take=None, auto_fix=True)`:
+6. `skin_remix(base_skin_id, overlay_skin_id, parts_to_take=None, auto_fix=True)`:
    - Takes the base body/armor from `base_skin_id` and transfers accessories/outer layers (e.g. scarf, jacket, hood) from `overlay_skin_id`.
    - Automatically heals Layer 1 and Layer 2 geometry.
-4. `skin_rag_status()`:
+7. `skin_rag_status()`:
    - Returns the number of indexed skins and database health.
 
 ### RAG-Powered Design Workflow:

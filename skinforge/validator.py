@@ -149,3 +149,92 @@ class SkinValidator:
             msg = f"Head front/right seam has noticeable color jump (delta = {diff:.1f})."
             self.warnings.append(msg)
             self.seam_issues.append(msg)
+
+
+def compute_aesthetic_score(canvas_or_arr) -> Dict[str, Any]:
+    """
+    Compute an algorithmic quality and aesthetic craftsmanship score (0.0 to 1.0)
+    for a Minecraft skin.
+    
+    Evaluates:
+      1. Layer 2 relief density (optimal 15-40% 3D accents).
+      2. Color palette entropy & shading ramp depth (16-55 harmonious colors).
+      3. Surface texture variance (rejects flat unshaded flood fills).
+    """
+    if hasattr(canvas_or_arr, "arr"):
+        arr = canvas_or_arr.arr
+    elif hasattr(canvas_or_arr, "get_part"):
+        # Synthesize 64x64 array from parts
+        from .canvas import MINECRAFT_UV_MAP
+        arr = np.zeros((64, 64, 4), dtype=np.uint8)
+        for part_name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
+            arr[v0:v1, u0:u1] = canvas_or_arr.get_part(part_name)
+    else:
+        arr = np.array(canvas_or_arr, dtype=np.uint8)
+
+    # 1. Layer 2 Relief Metric
+    l2_pixels = 0
+    total_l2_pixels = 0
+    for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
+        if name.startswith("hat_") or name.startswith("jacket_") or "sleeve" in name or "pants" in name:
+            part = arr[v0:v1, u0:u1]
+            total_l2_pixels += part.shape[0] * part.shape[1]
+            l2_pixels += int(np.sum(part[:, :, 3] > 0))
+
+    l2_ratio = l2_pixels / max(1, total_l2_pixels)
+    if 0.12 <= l2_ratio <= 0.45:
+        score_l2 = 1.0
+    elif 0.05 <= l2_ratio < 0.12:
+        score_l2 = 0.6 + (l2_ratio - 0.05) * 5.7
+    elif 0.45 < l2_ratio <= 0.65:
+        score_l2 = 1.0 - (l2_ratio - 0.45) * 2.5
+    elif l2_ratio > 0.65:
+        score_l2 = 0.35
+    else:
+        score_l2 = 0.2  # 0 active L2 pixels (flat skin)
+
+    # 2. Color Palette Richness
+    opaque_mask = arr[:, :, 3] > 128
+    opaque_colors = arr[opaque_mask][:, :3]
+    if len(opaque_colors) > 0:
+        unique_colors = len(np.unique(opaque_colors, axis=0))
+    else:
+        unique_colors = 0
+
+    if 16 <= unique_colors <= 65:
+        score_colors = 1.0
+    elif 8 <= unique_colors < 16:
+        score_colors = 0.4 + (unique_colors - 8) * 0.075
+    elif unique_colors < 8:
+        score_colors = 0.15
+    elif 65 < unique_colors <= 140:
+        score_colors = 1.0 - (unique_colors - 65) * 0.005
+    else:
+        score_colors = 0.5  # extreme random noise / photo artifacts
+
+    # 3. Shading Variance (Standard deviation across main faces)
+    std_scores = []
+    for test_face in ["head_front", "body_front", "right_arm_front"]:
+        u0, v0, u1, v1 = MINECRAFT_UV_MAP[test_face]
+        face_rgb = arr[v0:v1, u0:u1, :3]
+        std_scores.append(float(np.mean(np.std(face_rgb, axis=(0, 1)))))
+
+    mean_std = float(np.mean(std_scores))
+    if 12.0 <= mean_std <= 55.0:
+        score_shading = 1.0
+    elif mean_std < 12.0:
+        score_shading = max(0.1, mean_std / 12.0)
+    else:
+        score_shading = max(0.6, 1.0 - (mean_std - 55.0) * 0.01)
+
+    # Weighted overall score
+    overall = float(0.40 * score_l2 + 0.35 * score_colors + 0.25 * score_shading)
+    overall = round(max(0.0, min(1.0, overall)), 3)
+
+    return {
+        "score": overall,
+        "layer2_ratio": round(l2_ratio, 3),
+        "unique_colors": unique_colors,
+        "shading_variance": round(mean_std, 1),
+        "tier": "top_tier" if overall >= 0.75 else "high" if overall >= 0.60 else "medium" if overall >= 0.40 else "low"
+    }
