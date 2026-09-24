@@ -758,6 +758,12 @@ def skin_set_part_ascii(
         return f"Error: Unknown part '{part_name}'. Valid parts: {list(MINECRAFT_UV_MAP.keys())}"
 
     chosen_palette = palette or {}
+    if isinstance(chosen_palette, str):
+        import json
+        try:
+            chosen_palette = json.loads(chosen_palette)
+        except Exception:
+            pass
     if palette_name:
         p_name = palette_name.upper().strip()
         if p_name in ("TECHWEAR", "CYBERPUNK", "TECHWEAR_CYBERPUNK"):

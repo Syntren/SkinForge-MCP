@@ -173,12 +173,25 @@ class SkinCanvas:
             elif p_upper in ("ANIME", "ANIME_SKIN"):
                 palette = ANIME_SKIN
             else:
-                raise ValueError(f"Unknown named palette: '{palette}'. Use a palette dict or 'TECHWEAR_CYBERPUNK'.")
+                import json
+                try:
+                    palette = json.loads(palette)
+                except Exception:
+                    raise ValueError(f"Unknown named palette: '{palette}'. Use a palette dict or 'TECHWEAR_CYBERPUNK'.")
 
         # Normalize palette colors
         norm_palette = {}
-        for k, v in palette.items():
-            norm_palette[k] = normalize_color(v)
+        if isinstance(palette, dict):
+            for k, v in palette.items():
+                norm_palette[k] = normalize_color(v)
+
+        # Ensure transparent tokens default to [0, 0, 0, 0] if not explicitly overridden
+        if "." not in norm_palette:
+            norm_palette["."] = np.array([0, 0, 0, 0], dtype=np.uint8)
+        if " " not in norm_palette:
+            norm_palette[" "] = np.array([0, 0, 0, 0], dtype=np.uint8)
+        if "_" not in norm_palette:
+            norm_palette["_"] = np.array([0, 0, 0, 0], dtype=np.uint8)
 
         lines = [line.strip() for line in ascii_str.strip().split("\n") if line.strip()]
         if not lines:
