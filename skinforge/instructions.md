@@ -45,7 +45,34 @@ Always use these exact string identifiers for `part_name` parameters:
 
 ---
 
-## 3. Recommended Autonomous Workflow (6 Steps)
+## 3. RAG & Reference Skin Search (900k Human-Crafted Skins)
+
+SkinForge MCP includes a built-in search engine over **900,000+ captioned Minecraft skins** powered by SQLite FTS5 (BM25 ranking).
+When asked to design a skin (e.g. *"cyberpunk samurai"*, *"purple scarf ninja"*, *"steampunk engineer"*, *"goth girl"*), **ALWAYS start by searching the RAG database**!
+
+### Available RAG Tools:
+1. `skin_search(query, limit=5, render_previews=True)`:
+   - Searches 900k+ human-crafted skins using BM25 relevance ranking.
+   - Automatically renders 3D turnaround previews (`preview_3d_path`) for visual inspection by multimodal agents.
+   - Returns skin IDs, captions, rank scores, and whether the skin uses Layer 2 outer relief.
+2. `skin_get_reference(skin_id, load_to_canvas=True/False, as_ascii=True)`:
+   - Retrieves the full 2D ASCII grids and color palette of a skin.
+   - Set `load_to_canvas=True` to immediately load this high-quality skin into your active editing session!
+3. `skin_remix(base_skin_id, overlay_skin_id, parts_to_take=None, auto_fix=True)`:
+   - Takes the base body/armor from `base_skin_id` and transfers accessories/outer layers (e.g. scarf, jacket, hood) from `overlay_skin_id`.
+   - Automatically heals Layer 1 and Layer 2 geometry.
+4. `skin_rag_status()`:
+   - Returns the number of indexed skins and database health.
+
+### RAG-Powered Design Workflow:
+1. **Search**: Call `skin_search(query="<user_request>")` to find candidate skins.
+2. **Inspect**: Review the returned captions and 3D preview image paths to select the best match.
+3. **Load or Remix**:
+   - Call `skin_get_reference(skin_id=..., load_to_canvas=True)` to base your work on a proven human-drawn design.
+   - Or call `skin_remix(...)` to combine features from two different skins.
+4. **Customize**: Modify colors with `skin_adjust_hsv` or `skin_replace_color`, add custom text/symbols with `skin_draw_text` / `skin_draw_symbol`, and validate with `skin_validate()`.
+
+## 4. Recommended Autonomous Workflow (7 Steps)
 
 Follow this lifecycle for predictable, defect-free skin generation:
 
@@ -83,7 +110,7 @@ Follow this lifecycle for predictable, defect-free skin generation:
 
 ---
 
-## 4. Token-Efficient Editing Guide
+## 5. Token-Efficient Editing Guide
 
 - **Micro-edits**: Do NOT resend full ASCII matrices for 1–4 pixels. Use `skin_set_pixels(part_name, pixels=[{'x': 2, 'y': 5, 'color': '#ffffff'}])` or `skin_set_pixel`.
 - **Recoloring**: Use `skin_adjust_hsv` (hue/saturation/brightness) or `skin_replace_color` (fuzzy color swap).

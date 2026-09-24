@@ -43,3 +43,8 @@ node_modules/
 *.db
 *.db-journal
 data/
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+data/**
