@@ -38,3 +38,8 @@ references/
 
 # Node / Context
 node_modules/
+
+# Database & datasets
+*.db
+*.db-journal
+data/

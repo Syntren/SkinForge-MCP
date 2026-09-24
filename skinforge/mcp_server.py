@@ -562,6 +562,139 @@ def skin_get_part_ascii(part_name: str, tolerance: int = 6) -> str:
 
 
 
+
+@server.tool()
+def skin_search(
+    query: str,
+    limit: int = 5,
+    render_previews: bool = True
+) -> str:
+    """
+    Search across 900,000+ captioned Minecraft skins using BM25 relevance ranking.
+    Returns matching skin IDs, descriptive captions, palette colors, and on-the-fly 3D turnaround previews.
+
+    Args:
+        query: Search keywords or visual description (e.g. 'cyberpunk samurai', 'purple scarf ninja', 'medieval knight', 'goth girl').
+        limit: Number of candidate skins to return (default: 5, max: 20).
+        render_previews: Whether to render 3D turnaround previews for visual inspection (default: True).
+    """
+    from .rag import get_rag
+    rag = get_rag()
+    results = rag.search(query=query, limit=min(limit, 20), render_previews=render_previews)
+    if not results:
+        return json.dumps({
+            "status": "empty",
+            "message": f"No skins found matching query: '{query}'. Total skins in DB: {rag.count()}",
+            "results": []
+        }, indent=2)
+
+    return json.dumps({
+        "status": "success",
+        "query": query,
+        "total_results": len(results),
+        "results": results
+    }, indent=2)
+
+
+@server.tool()
+def skin_get_reference(
+    skin_id: str,
+    load_to_canvas: bool = False,
+    as_ascii: bool = True
+) -> str:
+    """
+    Retrieve full details for a reference skin by ID from the 900k dataset.
+    Can load the skin directly into the active editing session and/or return its ASCII parts and palette.
+
+    Args:
+        skin_id: Unique identifier of the skin (from skin_search).
+        load_to_canvas: If True, replaces the current active session skin with this reference skin (default: False).
+        as_ascii: If True, returns full 2D ASCII grids for all parts and the color palette (default: True).
+    """
+    from .rag import get_rag
+    rag = get_rag()
+    skin_data = rag.get_skin(skin_id, as_canvas=load_to_canvas, as_ascii=as_ascii)
+    if not skin_data:
+        return json.dumps({"error": f"Skin '{skin_id}' not found in RAG database."})
+
+    if load_to_canvas and "canvas" in skin_data:
+        session.canvas = skin_data["canvas"]
+        session.model = skin_data.get("model_type", "default")
+        session.mark_dirty()
+
+    resp = {
+        "skin_id": skin_data["skin_id"],
+        "title": skin_data.get("title"),
+        "caption": skin_data.get("caption"),
+        "model_type": skin_data.get("model_type", "default"),
+        "loaded_to_active_canvas": load_to_canvas
+    }
+    if as_ascii:
+        resp["palette"] = skin_data.get("palette")
+        resp["parts"] = skin_data.get("parts")
+
+    return json.dumps(resp, indent=2)
+
+
+@server.tool()
+def skin_remix(
+    base_skin_id: str,
+    overlay_skin_id: str,
+    parts_to_take: Optional[List[str]] = None,
+    auto_fix: bool = True,
+    save_path: Optional[str] = None
+) -> str:
+    """
+    Remix two reference skins from the 900k dataset:
+    Takes the base body/armor from base_skin and overlays accessories/parts from overlay_skin.
+    Loads the remixed result into the active session canvas.
+
+    Args:
+        base_skin_id: ID of the base skin (provides primary body and clothing).
+        overlay_skin_id: ID of the overlay skin (provides accessories, hats, jackets, or scarves).
+        parts_to_take: Specific UV parts to transfer (default: all Layer 2 outer parts like hat, jacket, sleeves, pants).
+        auto_fix: Automatically heal Layer 1 holes and sanitize Layer 2 (default: True).
+        save_path: Optional path to save the resulting skin PNG.
+    """
+    from .rag import get_rag
+    rag = get_rag()
+    try:
+        remixed_canvas, info = rag.remix_skins(
+            base_skin_id=base_skin_id,
+            overlay_skin_id=overlay_skin_id,
+            parts_to_take=parts_to_take,
+            auto_fix=auto_fix,
+            save_path=save_path
+        )
+        session.canvas = remixed_canvas
+        session.mark_dirty()
+        return json.dumps({
+            "status": "success",
+            "message": f"Successfully remixed '{base_skin_id}' with '{overlay_skin_id}'.",
+            "preview_3d_path": info.get("preview_3d"),
+            "saved_to": save_path
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def skin_rag_status() -> str:
+    """
+    Get the status of the SkinForge RAG database (number of indexed skins, database path).
+    """
+    import os
+    from .rag import get_rag
+    rag = get_rag()
+    return json.dumps({
+        "status": "ready" if rag.count() > 0 else "empty",
+        "total_indexed_skins": rag.count(),
+        "database_path": str(rag.db_path),
+        "database_size_mb": round(os.path.getsize(rag.db_path) / (1024 * 1024), 2) if os.path.exists(rag.db_path) else 0
+    }, indent=2)
+
+
+
 @server.tool()
 def skin_build(
     palette: Dict[str, str],

@@ -14,44 +14,50 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 
 ## 🌟 Key Features
 
-### 1. 45 Native MCP Tools for AI Agents
+### 1. 49 Native MCP Tools for AI Agents
 - **Model Context Protocol (MCP) v3**: Enables LLMs to design, recolor, audit, and verify skins directly over stdio.
 - **Full Skin Assembly & VLM Fine-Tuning (`skin_build`)**: Assembles complete 64×64 dual-layer skins in a single atomic call using a global palette and ASCII matrices (~1,200 tokens vs 20,000 for raw pixels), purpose-built for Vision-Language model fine-tuning.
 - **Direct Reference Sampling (`skin_sample_reference`)**: Samples exact colors or extracts dominant palettes from concept art (`reference.jpeg`) and screenshots without writing Python scripts.
 - **Multimodal Visual Feedback (`skin_render_3d`, `skin_render_2d`)**: Generates and returns base64 PNG turnaround images directly inside tool results for autonomous visual verification.
 
-### 2. Real-Time 3D WebGL Viewer with Live Sync (`viewer.py`)
+### 2. Built-in 900,000+ Skin RAG Search Engine
+- **Instant Sub-Millisecond Search (`skin_search`)**: Queries across 900k+ human-crafted Minecraft skins using SQLite FTS5 (BM25 ranking) in <1ms.
+- **Visual Reference Generation**: Automatically renders 3D turnaround and 2D composite previews for retrieved skins so multimodal LLMs can inspect the design visually.
+- **Reference Extraction (`skin_get_reference`)**: Retrieves full color palettes and ASCII matrices, or loads candidate skins directly into the active editing session.
+- **Intelligent Remixing (`skin_remix`)**: Seamlessly transfers outer layers (jackets, scarves, hoods) and accessories from one reference skin onto another with automatic geometry healing.
+
+### 3. Real-Time 3D WebGL Viewer with Live Sync (`viewer.py`)
 - **Interactive Three.js Player**: Orbit rotate (Left Click drag), pan (Right Click drag), zoom (Scroll), and preview walk/run animations.
 - **Instant Reactive Updates (300ms)**: The moment an AI agent or developer calls an editing tool, the 3D model in the browser automatically updates its texture with zero lag, preserving camera angles and animation state.
 - **Live Status Indicator**: Header dot pulses violet when updates arrive and returns to emerald green.
 
-### 3. Dual-Layer 3D Depth Discipline (The 4 Golden Rules)
+### 4. Dual-Layer 3D Depth Discipline (The 4 Golden Rules)
 - **Rule 1 (Zero Holes)**: Strictly enforces 100% opacity on all 36 Base Layer parts (prevents the hollow black skull/torso bug).
 - **Rule 2 (+0.35 Relief)**: Restricts Layer 2 exclusively to 3D relief accents (bangs, hood rims, cuffs, pockets, emblems).
 - **Rule 3 (No Floating Profile Cardboard)**: `hat_front` rows 4–7 are kept transparent to prevent detached cardboard planes in 90° profile view.
 - **Rule 4 (No Floating Crown Planks)**: `hat_top` is either solid or transparent, eliminating single detached hovering stripes.
 - **Autonomous Self-Healing (`skin_auto_fix`)**: One-click autonomous healing that plugs holes and strips illegal floating planes.
 
-### 4. Vectorized HSL / HSV Color Engine
+### 5. Vectorized HSL / HSV Color Engine
 - Pure-NumPy color manipulation running in **< 1 millisecond**.
 - Rotate hue, boost saturation, or adjust brightness across specific parts or the entire skin with optional target color filtering (`skin_adjust_hsv`, `skin_shift_hue`).
 
-### 5. 3D Seam Continuity Auditor & Edge Healer
+### 6. 3D Seam Continuity Auditor & Edge Healer
 - **3D Edge Connectivity Matrix**: Scans cube fold boundaries (head vertical ring, top crown fold, torso flanks, jacket) to detect texture tears or color misalignments.
 - **Auto-Healing (`skin_align_seams`)**: Harmonizes and blends color jumps along adjacent 3D cube edges.
 
-### 6. Pixel Typography & Cyber Symbols
+### 7. Pixel Typography & Cyber Symbols
 - **3×5 Pixel Font Matrix (`skin_draw_text`)**: Writes crisp letters (A–Z), numbers (0–9), and punctuation (!, ?, -, :, .) on any face.
 - **Emblem Library (`skin_draw_symbol`)**: Instantly stamps cyber emblems (`cyber_s` 6×8 crest, `heart`, `star`, `lightning`, `skull`, `cross`) without coordinate guesswork.
 
-### 7. Full Outfits Macro & Model Converter
+### 8. Full Outfits Macro & Model Converter
 - **Coordinated Outfits (`skin_apply_outfit`)**: Applies full-body anatomical outfits (`techwear_hoodie`, `cargo_streetwear`, `casual_tshirt`) across Layer 1 and Layer 2 in a single call.
 - **Geometry Converter (`skin_convert_model`)**: Seamlessly converts between classic Steve (4px arms) and Alex Slim (3px arms) with UV island resampling.
 
-### 8. Multi-Target Synchronization & Auto-Previews (`skin_save`)
+### 9. Multi-Target Synchronization & Auto-Previews (`skin_save`)
 - Automatically saves to primary destination, synchronizes across canonical project paths, and regenerates 2D composite, 3D turnaround, and bottom-up previews in one atomic tool call.
 
-### 9. Canvas History, Undo/Redo & Named Checkpoints
+### 10. Canvas History, Undo/Redo & Named Checkpoints
 - Full undo/redo stack (`skin_undo`, `skin_redo`).
 - Save milestone snapshots (`skin_checkpoint`) and instantly roll back (`skin_restore_checkpoint`).
 

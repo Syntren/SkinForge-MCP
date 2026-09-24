@@ -35,6 +35,7 @@ from .seams import check_seams, align_seams
 from .typography import draw_text, draw_symbol
 from .outfits import apply_outfit
 from .converter import convert_skin_model
+from .rag import SkinRAG, get_rag
 
 __all__ = [
     "SkinCanvas",
@@ -60,7 +61,10 @@ __all__ = [
     "draw_headphones",
     "normalize_color",
     "rgba_to_hex",
-    "part_to_ascii, canvas_to_ascii",
+    "part_to_ascii",
+    "canvas_to_ascii",
+    "SkinRAG",
+    "get_rag",
     "create_base_body",
     "SKIN_TONE_PALETTES",
     "sample_image",
