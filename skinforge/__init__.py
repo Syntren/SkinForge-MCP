@@ -2,7 +2,7 @@
 SkinForge - Autonomous Minecraft Skin Authoring, Inspection & 3D/2D Rendering Toolkit.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 from .canvas import (
     SkinCanvas,
@@ -20,7 +20,7 @@ from .renderer import (
     render_turntable_gif,
     render_bottom_up,
 )
-from .validator import SkinValidator, compute_aesthetic_score
+from .validator import SkinValidator, compute_aesthetic_score, detect_pillow_shading
 from .palettes import (
     TECHWEAR_CYBERPUNK,
     ANIME_SKIN,
@@ -63,6 +63,7 @@ __all__ = [
     "render_bottom_up",
     "SkinValidator",
     "compute_aesthetic_score",
+    "detect_pillow_shading",
     "TECHWEAR_CYBERPUNK",
     "ANIME_SKIN",
     "CASUAL_STREETWEAR",

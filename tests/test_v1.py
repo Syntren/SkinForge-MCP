@@ -3,7 +3,7 @@ import numpy as np
 from PIL import Image
 
 from skinforge.canvas import SkinCanvas
-from skinforge.validator import compute_aesthetic_score, SkinValidator
+from skinforge.validator import compute_aesthetic_score, SkinValidator, detect_pillow_shading
 from skinforge.modular import assemble_skin, render_isolated_module
 from skinforge.vision import extract_visual_features, compute_visual_similarity
 from skinforge.rag import get_rag
@@ -153,12 +153,40 @@ class TestV1Features(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
 
+    def test_craftsmanship_aesthetic_scorer_v2(self):
+        # 1. Test radar metrics exist and are properly bounded [0.0, 1.0]
+        res = compute_aesthetic_score(self.canvas_a)
+        self.assertIn("metrics", res)
+        m = res["metrics"]
+        for key in ["relief_3d", "palette_harmony", "shading_depth", "spatial_coherence", "hue_shifting", "seam_continuity"]:
+            self.assertIn(key, m)
+            self.assertGreaterEqual(m[key], 0.0)
+            self.assertLessEqual(m[key], 1.0)
+        self.assertIsInstance(res["recommendations"], list)
+        self.assertIsInstance(res["deductions"], list)
+
+        # 2. Test pillow shading detection
+        clean_face = np.full((8, 8, 3), 150, dtype=np.uint8)
+        self.assertFalse(detect_pillow_shading(clean_face))
+
+        pillow_face = np.full((8, 8, 3), 80, dtype=np.uint8)
+        pillow_face[2:6, 2:6] = 230
+        self.assertTrue(detect_pillow_shading(pillow_face))
+
+        # 3. Test that random noise has significantly lower cluster coherence
+        palette = np.random.randint(0, 256, (50, 3), dtype=np.uint8)
+        noise_img = palette[np.random.randint(0, 50, (64, 64))]
+        noise_rgba = np.dstack([noise_img, np.full((64, 64), 255, dtype=np.uint8)])
+        res_noise = compute_aesthetic_score(noise_rgba)
+        self.assertLess(res_noise["metrics"]["spatial_coherence"], 0.95)
+
     def test_mcp_registered_tools(self):
         tools = server._tool_manager._tools
         self.assertIn('skin_assemble', tools)
         self.assertIn('skin_part_search', tools)
         self.assertIn('skin_search_by_image', tools)
         self.assertIn('skin_search', tools)
+        self.assertIn('skin_aesthetic_audit', tools)
 
 if __name__ == '__main__':
     unittest.main()

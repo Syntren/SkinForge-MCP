@@ -680,6 +680,20 @@ HTML_PAGE = """<!DOCTYPE html>
                         }).then(() => {
                             updateLayers();
                             document.getElementById("last-update").innerText = "Last updated: " + new Date().toLocaleTimeString() + " (" + currentSkinModel + ")";
+                            fetch("/api/aesthetic_score?t=" + Date.now())
+                                .then(r => r.json())
+                                .then(res => {
+                                    if (res && res.score !== undefined) {
+                                        const scoreEl = document.getElementById("lego-score-val");
+                                        const badgeEl = document.getElementById("lego-score-badge");
+                                        const detEl = document.getElementById("lego-score-details");
+                                        if (scoreEl) scoreEl.innerText = res.score + " / 1.0";
+                                        if (badgeEl) badgeEl.innerText = res.tier;
+                                        if (detEl && res.metrics) {
+                                            detEl.innerText = "Relief: " + Math.round(res.metrics.relief_3d*100) + "% | HueShift: " + Math.round(res.metrics.hue_shifting*100) + "% | Coherence: " + Math.round(res.metrics.spatial_coherence*100) + "%";
+                                        }
+                                    }
+                                }).catch(() => {});
                         });
                     }
                 })
@@ -992,7 +1006,7 @@ class SkinViewerServer(BaseHTTPRequestHandler):
             if os.path.exists(skin_path):
                 c = SkinCanvas()
                 c.load_png(skin_path)
-                score_info = compute_aesthetic_score(c)
+                score_info = compute_aesthetic_score(c, model=get_skin_model(skin_path))
                 payload = json.dumps(score_info).encode("utf-8")
             else:
                 payload = json.dumps({"score": 0.0, "tier": "unknown"}).encode("utf-8")

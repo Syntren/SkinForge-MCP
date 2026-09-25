@@ -19,7 +19,7 @@ from mcp.server.mcpserver import MCPServer
 from .canvas import SkinCanvas, MINECRAFT_UV_MAP
 from .ascii_codec import normalize_color, rgba_to_hex, part_to_ascii, canvas_to_ascii
 from .templates import create_base_body, SKIN_TONE_PALETTES
-from .validator import SkinValidator
+from .validator import SkinValidator, compute_aesthetic_score, detect_pillow_shading
 from .sampler import sample_image
 from .renderer import (
     render_composite_2d,
@@ -303,12 +303,15 @@ def skin_get_session_info() -> str:
     v_status = "Running" if session.viewer_process and session.viewer_process.poll() is None else "Stopped"
     model_desc = "Classic Steve 4px arm" if session.model == "default" else "Slim Alex 3px arm"
     ckpt_names = ", ".join(session.canvas.checkpoints.keys()) if session.canvas.checkpoints else "none"
+    aesthetic = compute_aesthetic_score(session.canvas)
+    m = aesthetic["metrics"]
 
     return (
         f"=== SkinForge Active Session Info ===\n"
         f"Loaded File: {session.file_path or '(In-memory canvas)'}\n"
         f"Unsaved Changes: {'Yes' if session.is_dirty else 'No'}\n"
         f"Player Model: {session.model} ({model_desc})\n"
+        f"Aesthetic Score: {aesthetic['score']:.2f} / 1.0 [{aesthetic['tier'].upper()}] (Relief: {int(m['relief_3d']*100)}%, Palette: {int(m['palette_harmony']*100)}%, Coherence: {int(m['spatial_coherence']*100)}%, HueShift: {int(m['hue_shifting']*100)}%)\n"
         f"Undo History: {len(session.canvas.history)} step(s) | Redo: {len(session.canvas.future)} step(s)\n"
         f"Checkpoints: {len(session.canvas.checkpoints)} ({ckpt_names})\n"
         f"Layer 1 (Base Body): {base_opaque}/{base_total} opaque pixels ({base_ratio:.1f}% solid)\n"
@@ -1727,6 +1730,52 @@ def skin_align_seams(seam_name: str = "all", mode: str = "blend") -> str:
     aligned = align_seams(session.canvas, seam_name=seam_name, mode=mode)
     session.mark_dirty()
     return f"Successfully aligned {aligned} edge pixel(s) across seam(s) matching '{seam_name}' using mode='{mode}'. Live viewer updated."
+
+
+@server.tool()
+def skin_aesthetic_audit(detailed: bool = True) -> str:
+    """
+    Perform a comprehensive pixel art craftsmanship and aesthetic audit on the active working canvas.
+    Evaluates:
+      1. Overall Aesthetic Score (0.0 to 1.0) & Tier (low, medium, high, top_tier).
+      2. Layer 2 Relief Metric (optimal 12-45% 3D accents).
+      3. Color Palette Harmony & Entropy (16-70 harmonious colors, avoids muddy flat fills or bloat).
+      4. Shading Dynamic Range & Depth (variance across key faces).
+      5. Spatial Cluster Coherence (autocorrelation ratio; separates true pixel clusters from TV noise).
+      6. Vectorized Hue Shifting (rewards artistic warm highlights & cool shadow temperature ramps).
+      7. Seam Continuity (continuity across 3D cuboid transitions).
+      8. Pillow shading detection and exact point deductions.
+    Returns structured craftsmanship breakdown with actionable suggestions for elevating the skin to 1.0.
+    """
+    res = compute_aesthetic_score(session.canvas, deduct_defects=True)
+    m = res["metrics"]
+
+    out = [
+        "=== SkinForge Aesthetic Craftsmanship Audit ===",
+        f"Model: {session.canvas.model.upper()} | Overall Score: {res['score']:.2f} / 1.0 [{res['tier'].upper()}] (Base: {res['base_score']:.2f})",
+        "",
+        "Craftsmanship Radar Metrics:",
+        f"  - 3D Relief Depth:       {int(m['relief_3d']*100)}% ({res['layer2_ratio']*100:.1f}% Layer 2 coverage)",
+        f"  - Palette Harmony:       {int(m['palette_harmony']*100)}% ({res['unique_colors']} unique colors)",
+        f"  - Shading Depth:         {int(m['shading_depth']*100)}% (variance: {res['shading_variance']})",
+        f"  - Spatial Coherence:     {int(m['spatial_coherence']*100)}% (anti-noise cluster density)",
+        f"  - Hue-Shift Dynamics:    {int(m['hue_shifting']*100)}% (color temperature ramps)",
+        f"  - Seam Continuity:       {int(m['seam_continuity']*100)}% (edge alignment)",
+    ]
+
+    if res["deductions"]:
+        out.append("\nDefect Deductions:")
+        for d in res["deductions"]:
+            out.append(f"  - {d}")
+
+    if res["recommendations"]:
+        out.append("\nActionable Recommendations:")
+        for r in res["recommendations"]:
+            out.append(f"  -> {r}")
+    else:
+        out.append("\n[PERFECT] No aesthetic flaws detected. Skin meets top-tier craftsmanship standards!")
+
+    return "\n".join(out)
 
 
 @server.tool()

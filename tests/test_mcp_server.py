@@ -408,6 +408,21 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         val_res = self.call("skin_validate", {})
         self.assertIn("Zero visual warnings", val_res.content[0].text)
 
+    def test_skin_aesthetic_audit_tool(self):
+        # 1. Audit default Syntren skin
+        audit_res = self.call("skin_aesthetic_audit", {})
+        text = audit_res.content[0].text
+        self.assertIn("SkinForge Aesthetic Craftsmanship Audit", text)
+        self.assertIn("Craftsmanship Radar Metrics", text)
+        self.assertIn("3D Relief Depth", text)
+        self.assertIn("Spatial Coherence", text)
+        self.assertIn("Hue-Shift Dynamics", text)
+
+        # 2. Session info includes aesthetic score
+        info_res = self.call("skin_get_session_info", {})
+        info_text = info_res.content[0].text
+        self.assertIn("Aesthetic Score", info_text)
+
 
 if __name__ == "__main__":
     unittest.main()

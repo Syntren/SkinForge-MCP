@@ -2,11 +2,11 @@
 
 **Autonomous Model Context Protocol (MCP) Server & Procedural Engine for Minecraft Skins.**
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/Syntren/SkinForge-MCP/releases)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/Syntren/SkinForge-MCP/releases)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0%20Compliant-purple.svg)](https://modelcontextprotocol.io/)
-[![Tools](https://img.shields.io/badge/MCP%20Tools-54%20Native%20Tools-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-31%2F31%20Passed-success.svg)]()
+[![Tools](https://img.shields.io/badge/MCP%20Tools-55%20Native%20Tools-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-33%2F33%20Passed-success.svg)]()
 [![WebGL](https://img.shields.io/badge/Viewer-Three.js%20WebGL-orange.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -16,8 +16,9 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 
 ## 🌟 Key Features
 
-### 1. 54 Native MCP Tools for AI Agents
+### 1. 55 Native MCP Tools for AI Agents
 - **Model Context Protocol (MCP) Compliant**: Enables LLMs to design, recolor, audit, assemble, and verify skins directly over stdio or SSE.
+- **Craftsmanship & Aesthetic Audit (`skin_aesthetic_audit`)**: Full 6-dimensional pixel art evaluation (3D relief, palette harmony, shading depth, cluster coherence, hue shifting, seam continuity) with exact point deductions and actionable pro-tips.
 - **Full Skin Assembly & VLM Fine-Tuning (`skin_build`)**: Assembles complete 64×64 dual-layer skins in a single atomic call using a global palette and ASCII matrices (~1,200 tokens vs 20,000 for raw pixels), purpose-built for Vision-Language model fine-tuning.
 - **Granular Part Transfer (`skin_import_part`)**: Import any individual anatomical UV part (e.g. face, bangs, sleeve emblem) from an external skin or RAG skin ID directly into the active editing session in a single call.
 - **Autonomous Denoising & Palette Cleaning (`skin_denoise_palette`)**: Scans and cleans compression artifacts and isolated noise pixels, harmonizing colors into crisp, authentic pixel-art palettes.
@@ -29,11 +30,15 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 - **Isolated Component 3D Mannequins**: Renders the queried module on a neutral dark mannequin so multimodal models can evaluate hairstyles or jacket folds in isolation.
 - **Automated Seam Harmonization (`skin_assemble`)**: Merges modules from different skins into a cohesive character while automatically blending neck, shoulder, and waist seams and healing 3D geometry rules.
 
-### 3. Aesthetic Quality Curation & Denoising Filter
-- **Algorithmic Craftsmanship Scorer (`compute_aesthetic_score`)**: Scores skins (0.0 to 1.0) and categorizes them into quality tiers (`low`, `medium`, `high`, `top_tier`).
-  - Evaluates Layer 2 relief density (optimal 15–40% 3D accents).
-  - Evaluates color entropy and shading depth (detects rich ramps vs flat flood fills).
-  - Evaluates surface texture variance across major anatomical facets.
+### 3. Next-Gen Craftsmanship & Aesthetic Engine v2 (`compute_aesthetic_score`, `skin_aesthetic_audit`)
+- **Multi-Dimensional Radar Metrics (0.0 to 1.0)**: Evaluates authentic pixel art standards across 6 quantitative dimensions:
+  - **3D Relief Depth**: Optimal Layer 2 coverage (12–45%) without flat planes or over-dense armor bloat.
+  - **Palette Harmony & Entropy**: Rich color ramps (16–70 colors) while rejecting unshaded bucket fills or noisy color fragmentation.
+  - **Shading Depth & Dynamic Range**: Tonal contrast across major anatomical facets.
+  - **Spatial Cluster Coherence (Anti-Noise)**: Local autocorrelation ratio distinguishing true clustered pixel art from random TV static / confetti noise.
+  - **Vectorized Hue Shifting**: Rewards natural lighting temperature ramps (warm highlights toward yellow/cyan, cool shadows toward blue/purple) over muddy monochrome brightness dragging.
+  - **Seam Continuity**: Continuity and color gradient alignment across 3D cuboid transitions (head front-to-side, torso front-to-side).
+- **Pillow Shading & Flaw Detection**: Catches classic beginner pillow shading (dark perimeters with bright center) and applies defect deductions for Rule 1 holes, Rule 3 floating cardboard, and Rule 4 planks.
 - **Search Quality Filtering (`skin_search(..., min_quality="medium")`)**: Automatically discards low-effort flat fills, messy noise artifacts, and hollow textures from search results.
 
 ### 4. Visual Concept & Image Search (`skin_search_by_image`)
@@ -246,7 +251,8 @@ score_info = compute_aesthetic_score("skin_syntren.png")
 print(f"Quality Tier: {score_info['tier']} (Score: {score_info['score']})")
 print(f"Layer 2 Relief Ratio: {score_info['layer2_ratio']}")
 print(f"Unique Colors: {score_info['unique_colors']}")
-print(f"Shading Variance: {score_info['shading_variance']}")
+print(f"Radar Metrics: {score_info['metrics']}")
+print(f"Recommendations: {score_info['recommendations']}")
 ```
 
 ---

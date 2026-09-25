@@ -114,8 +114,9 @@ Follow this lifecycle for predictable, defect-free skin generation:
    - Run `skin_check_seams(tolerance=35)` to detect texture tears across 3D cube folds.
    - Run `skin_align_seams(seam_name='all', mode='blend')` to automatically blend wrap-around edges.
 
-5. **Quality Validation & Auto-Fix**:
-   - Run `skin_validate()`. Check for Layer 1 holes, Rule 3 profile violations, or Rule 4 crown violations.
+5. **Quality Validation, Aesthetic Audit & Auto-Fix**:
+   - Run `skin_validate()`. Checks for Layer 1 holes, Rule 3 profile violations, or Rule 4 crown violations.
+   - Run `skin_aesthetic_audit()` for an exhaustive 6-metric pixel art craftsmanship evaluation (3D relief, palette harmony, shading depth, spatial coherence, hue shifting, seams) with actionable tips to achieve a 1.0 Top-Tier score.
    - If any warnings/errors occur, run `skin_auto_fix()`.
 
 6. **Visual Verification & Save**:
