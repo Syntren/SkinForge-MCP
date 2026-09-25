@@ -41,7 +41,7 @@ Always use these exact string identifiers for `part_name` parameters:
 | **Right Leg / Pants** | `right_leg_top`, `right_leg_bottom`<br>`right_leg_front`, `right_leg_back`<br>`right_leg_right`, `right_leg_left` | `right_pants_top`, `right_pants_bottom`<br>`right_pants_front`, `right_pants_back`<br>`right_pants_right`, `right_pants_left` | Caps: 4×4<br>Sides: 4×12 |
 | **Left Leg / Pants** | `left_leg_top`, `left_leg_bottom`<br>`left_leg_front`, `left_leg_back`<br>`left_leg_right`, `left_leg_left` | `left_pants_top`, `left_pants_bottom`<br>`left_pants_front`, `left_pants_back`<br>`left_pants_right`, `left_pants_left` | Caps: 4×4<br>Sides: 4×12 |
 
-*Note: For arms/legs, `_right` is the character's right side, `_left` is character's left side. For the Right Arm, `_right` is outer and `_left` faces torso. For Left Arm, `_left` is outer and `_right` faces torso.*
+*Note: For arms/legs, `_right` is the character's right side, `_left` is character's left side. For the Right Arm, `_right` is outer and `_left` faces torso. For Left Arm, `_left` is outer and `_right` faces torso. For Alex Slim 3px models, arm caps and front/back faces have W = 3 (3×4 caps, 3×12 front/back) while outer/inner flanks remain 4×12. SkinForge adapts UV layouts automatically.*
 
 ---
 

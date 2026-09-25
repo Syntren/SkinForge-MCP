@@ -18,10 +18,11 @@ class Minecraft3DRenderer:
         self.color_buf[:] = bg
         self.depth_buf[:] = 1e9
 
-    def render_model(self, skin_arr, yaw_deg=-25, pitch_deg=15, ox=400, oy=320, scale=12, outer_dilation=0.35, layer_mode="both"):
+    def render_model(self, skin_arr, yaw_deg=-25, pitch_deg=15, ox=400, oy=320, scale=12, outer_dilation=0.35, layer_mode="both", model="default"):
         """
         Render player model with given camera angles into internal buffer.
         layer_mode: 'both' (default), 'base' (Layer 1 only), or 'outer' (Layer 2 only).
+        model: 'default' (Steve 4px arms) or 'slim' (Alex 3px arms).
         """
         rad_yaw = np.radians(yaw_deg)
         rad_pitch = np.radians(pitch_deg)
@@ -122,21 +123,33 @@ class Minecraft3DRenderer:
         hat_f  = {'top': (40, 0, 48, 8), 'bottom': (48, 0, 56, 8), 'right': (32, 8, 40, 16), 'front': (40, 8, 48, 16), 'left': (48, 8, 56, 16), 'back': (56, 8, 64, 16)}
         body_f = {'top': (20, 16, 28, 20), 'bottom': (28, 16, 36, 20), 'right': (16, 20, 20, 32), 'front': (20, 20, 28, 32), 'left': (28, 20, 32, 32), 'back': (32, 20, 40, 32)}
         jack_f = {'top': (20, 32, 28, 36), 'bottom': (28, 32, 36, 36), 'right': (16, 36, 20, 48), 'front': (20, 36, 28, 48), 'left': (28, 36, 32, 48), 'back': (32, 36, 40, 48)}
-        r_arm_f = {'top': (44, 16, 48, 20), 'bottom': (48, 16, 52, 20), 'right': (40, 20, 44, 32), 'front': (44, 20, 48, 32), 'left': (48, 20, 52, 32), 'back': (52, 20, 56, 32)}
-        r_slv_f = {'top': (44, 32, 48, 36), 'bottom': (48, 32, 52, 36), 'right': (40, 36, 44, 48), 'front': (44, 36, 48, 48), 'left': (48, 36, 52, 48), 'back': (52, 36, 56, 48)}
-        l_arm_f = {'top': (36, 48, 40, 52), 'bottom': (40, 48, 44, 52), 'right': (32, 52, 36, 64), 'front': (36, 52, 40, 64), 'left': (40, 52, 44, 64), 'back': (44, 52, 48, 64)}
-        l_slv_f = {'top': (52, 48, 56, 52), 'bottom': (56, 48, 60, 52), 'right': (48, 52, 52, 64), 'front': (52, 52, 56, 64), 'left': (56, 52, 60, 64), 'back': (60, 52, 64, 64)}
         r_leg_f = {'top': (4, 16, 8, 20), 'bottom': (8, 16, 12, 20), 'right': (0, 20, 4, 32), 'front': (4, 20, 8, 32), 'left': (8, 20, 12, 32), 'back': (12, 20, 16, 32)}
         r_pnt_f = {'top': (4, 32, 8, 36), 'bottom': (8, 32, 12, 36), 'right': (0, 36, 4, 48), 'front': (4, 36, 8, 48), 'left': (8, 36, 12, 48), 'back': (12, 36, 16, 48)}
         l_leg_f = {'top': (20, 48, 24, 52), 'bottom': (24, 48, 28, 52), 'right': (16, 52, 20, 64), 'front': (20, 52, 24, 64), 'left': (24, 52, 28, 64), 'back': (28, 52, 32, 64)}
         l_pnt_f = {'top': (4, 48, 8, 52), 'bottom': (8, 48, 12, 52), 'right': (0, 52, 4, 64), 'front': (4, 52, 8, 64), 'left': (8, 52, 12, 64), 'back': (12, 52, 16, 64)}
 
+        is_slim = bool(model and model.lower() == "slim")
+        if is_slim:
+            r_arm_f = {'top': (44, 16, 47, 20), 'bottom': (47, 16, 50, 20), 'right': (40, 20, 44, 32), 'front': (44, 20, 47, 32), 'left': (47, 20, 51, 32), 'back': (51, 20, 54, 32)}
+            r_slv_f = {'top': (44, 32, 47, 36), 'bottom': (47, 32, 50, 36), 'right': (40, 36, 44, 48), 'front': (44, 36, 47, 48), 'left': (47, 36, 51, 48), 'back': (51, 36, 54, 48)}
+            l_arm_f = {'top': (36, 48, 39, 52), 'bottom': (39, 48, 42, 52), 'right': (32, 52, 36, 64), 'front': (36, 52, 39, 64), 'left': (39, 52, 43, 64), 'back': (43, 52, 46, 64)}
+            l_slv_f = {'top': (52, 48, 55, 52), 'bottom': (55, 48, 58, 52), 'right': (48, 52, 52, 64), 'front': (52, 52, 55, 64), 'left': (55, 52, 59, 64), 'back': (59, 52, 62, 64)}
+            arm_w = 3
+            r_arm_x = -7
+        else:
+            r_arm_f = {'top': (44, 16, 48, 20), 'bottom': (48, 16, 52, 20), 'right': (40, 20, 44, 32), 'front': (44, 20, 48, 32), 'left': (48, 20, 52, 32), 'back': (52, 20, 56, 32)}
+            r_slv_f = {'top': (44, 32, 48, 36), 'bottom': (48, 32, 52, 36), 'right': (40, 36, 44, 48), 'front': (44, 36, 48, 48), 'left': (48, 36, 52, 48), 'back': (52, 36, 56, 48)}
+            l_arm_f = {'top': (36, 48, 40, 52), 'bottom': (40, 48, 44, 52), 'right': (32, 52, 36, 64), 'front': (36, 52, 40, 64), 'left': (40, 52, 44, 64), 'back': (44, 52, 48, 64)}
+            l_slv_f = {'top': (52, 48, 56, 52), 'bottom': (56, 48, 60, 52), 'right': (48, 52, 52, 64), 'front': (52, 52, 56, 64), 'left': (56, 52, 60, 64), 'back': (60, 52, 64, 64)}
+            arm_w = 4
+            r_arm_x = -8
+
         # Render Base Layer (Layer 1)
         if layer_mode in ('both', 'base'):
             draw_box(-4, 24, -4, 8, 8, 8, head_f)
             draw_box(-4, 12, -2, 8, 12, 4, body_f)
-            draw_box(-8, 12, -2, 4, 12, 4, r_arm_f)
-            draw_box(4, 12, -2, 4, 12, 4, l_arm_f)
+            draw_box(r_arm_x, 12, -2, arm_w, 12, 4, r_arm_f)
+            draw_box(4, 12, -2, arm_w, 12, 4, l_arm_f)
             draw_box(-4, 0, -2, 4, 12, 4, r_leg_f)
             draw_box(0, 0, -2, 4, 12, 4, l_leg_f)
 
@@ -145,8 +158,8 @@ class Minecraft3DRenderer:
             o = outer_dilation
             draw_box(-4-o, 24-o, -4-o, 8+2*o, 8+2*o, 8+2*o, hat_f)
             draw_box(-4-o, 12-o, -2-o, 8+2*o, 12+2*o, 4+2*o, jack_f)
-            draw_box(-8-o, 12-o, -2-o, 4+2*o, 12+2*o, 4+2*o, r_slv_f)
-            draw_box(4-o, 12-o, -2-o, 4+2*o, 12+2*o, 4+2*o, l_slv_f)
+            draw_box(r_arm_x-o, 12-o, -2-o, arm_w+2*o, 12+2*o, 4+2*o, r_slv_f)
+            draw_box(4-o, 12-o, -2-o, arm_w+2*o, 12+2*o, 4+2*o, l_slv_f)
             draw_box(-4-o, 0-o, -2-o, 4+2*o, 12+2*o, 4+2*o, r_pnt_f)
             draw_box(0-o, 0-o, -2-o, 4+2*o, 12+2*o, 4+2*o, l_pnt_f)
 
@@ -211,11 +224,18 @@ def _extract_skin_arr(skin_source):
     if isinstance(skin_source, str):
         im = Image.open(skin_source).convert("RGBA")
         return np.array(im)
+    elif hasattr(skin_source, "to_array"):
+        return skin_source.to_array()
     elif hasattr(skin_source, "parts"):
-        from .canvas import MINECRAFT_UV_MAP
+        from .canvas import get_uv_map
+        model = getattr(skin_source, "model", "default")
+        uv_map = get_uv_map(model)
         arr = np.zeros((64, 64, 4), dtype=np.uint8)
-        for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
-            arr[v0:v1, u0:u1] = skin_source.parts[name]
+        for name, (u0, v0, u1, v1) in uv_map.items():
+            if name in skin_source.parts:
+                part = skin_source.parts[name]
+                if part.shape == (v1 - v0, u1 - u0, 4):
+                    arr[v0:v1, u0:u1] = part
         return arr
     elif isinstance(skin_source, Image.Image):
         return np.array(skin_source.convert("RGBA"))
@@ -300,12 +320,14 @@ def render_composite_2d(skin_source, out_path=None, scale=16):
     return res
 
 
-def render_3d_single(skin_source, yaw_deg=-30, pitch_deg=15, width=400, height=480, scale=9, ox=200, oy=320, layer_mode="both", out_path=None):
+def render_3d_single(skin_source, yaw_deg=-30, pitch_deg=15, width=400, height=480, scale=9, ox=200, oy=320, layer_mode="both", model=None, out_path=None):
     """Render a single 3D camera angle of the player model."""
     skin_arr = _extract_skin_arr(skin_source)
+    if model is None:
+        model = getattr(skin_source, "model", "default")
     renderer = Minecraft3DRenderer(width, height)
     renderer.clear((18, 16, 24, 255))
-    renderer.render_model(skin_arr, yaw_deg=yaw_deg, pitch_deg=pitch_deg, ox=ox, oy=oy, scale=scale, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=yaw_deg, pitch_deg=pitch_deg, ox=ox, oy=oy, scale=scale, layer_mode=layer_mode, model=model)
     out = Image.fromarray(renderer.color_buf)
     if out_path:
         out.save(out_path)
@@ -313,20 +335,22 @@ def render_3d_single(skin_source, yaw_deg=-30, pitch_deg=15, width=400, height=4
     return out
 
 
-def render_3d_turnaround(skin_source, out_path=None, layer_mode="both"):
+def render_3d_turnaround(skin_source, out_path=None, layer_mode="both", model=None):
     """Render complete 4-angle 3D view (Front 3/4, Left profile, Back 3/4, Back straight)."""
     skin_arr = _extract_skin_arr(skin_source)
+    if model is None:
+        model = getattr(skin_source, "model", "default")
     renderer = Minecraft3DRenderer(1000, 480)
     renderer.clear((18, 16, 24, 255))
 
     # Angle 1: Front 3/4
-    renderer.render_model(skin_arr, yaw_deg=-30, pitch_deg=15, ox=140, oy=320, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=-30, pitch_deg=15, ox=140, oy=320, scale=9, layer_mode=layer_mode, model=model)
     # Angle 2: Side Left profile
-    renderer.render_model(skin_arr, yaw_deg=75, pitch_deg=8, ox=380, oy=320, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=75, pitch_deg=8, ox=380, oy=320, scale=9, layer_mode=layer_mode, model=model)
     # Angle 3: Back 3/4
-    renderer.render_model(skin_arr, yaw_deg=150, pitch_deg=15, ox=620, oy=320, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=150, pitch_deg=15, ox=620, oy=320, scale=9, layer_mode=layer_mode, model=model)
     # Angle 4: Back straight
-    renderer.render_model(skin_arr, yaw_deg=180, pitch_deg=10, ox=860, oy=320, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=180, pitch_deg=10, ox=860, oy=320, scale=9, layer_mode=layer_mode, model=model)
 
     out = Image.fromarray(renderer.color_buf)
     if out_path:
@@ -368,16 +392,18 @@ def render_part_zoomed(skin_source, part_name, scale=16, show_grid=True, out_pat
     return img
 
 
-def render_turntable_gif(skin_source, out_path, frames=16, fps=12, layer_mode="both"):
+def render_turntable_gif(skin_source, out_path, frames=16, fps=12, layer_mode="both", model=None):
     """Render an animated 360-degree turntable rotation GIF of the player."""
     skin_arr = _extract_skin_arr(skin_source)
+    if model is None:
+        model = getattr(skin_source, "model", "default")
     images = []
     renderer = Minecraft3DRenderer(400, 480)
 
     for i in range(frames):
         yaw = -30 + i * (360.0 / frames)
         renderer.clear((18, 16, 24, 255))
-        renderer.render_model(skin_arr, yaw_deg=yaw, pitch_deg=12, ox=200, oy=320, scale=9, layer_mode=layer_mode)
+        renderer.render_model(skin_arr, yaw_deg=yaw, pitch_deg=12, ox=200, oy=320, scale=9, layer_mode=layer_mode, model=model)
         # Crucial: copy the underlying buffer so frames do not share identical memory
         images.append(Image.fromarray(renderer.color_buf.copy()))
 
@@ -393,20 +419,22 @@ def render_turntable_gif(skin_source, out_path, frames=16, fps=12, layer_mode="b
     return out_path
 
 
-def render_bottom_up(skin_source, out_path=None, layer_mode="both"):
+def render_bottom_up(skin_source, out_path=None, layer_mode="both", model=None):
     """Render 4-angle bottom-up 3D view (looking up from below) to inspect chin, neck, and hood underside."""
     skin_arr = _extract_skin_arr(skin_source)
+    if model is None:
+        model = getattr(skin_source, "model", "default")
     renderer = Minecraft3DRenderer(1000, 520)
     renderer.clear((18, 16, 24, 255))
 
     # Angle 1: Front low (looking up at chin & collar)
-    renderer.render_model(skin_arr, yaw_deg=0, pitch_deg=-28, ox=140, oy=370, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=0, pitch_deg=-28, ox=140, oy=370, scale=9, layer_mode=layer_mode, model=model)
     # Angle 2: Front 3/4 low
-    renderer.render_model(skin_arr, yaw_deg=-35, pitch_deg=-28, ox=380, oy=370, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=-35, pitch_deg=-28, ox=380, oy=370, scale=9, layer_mode=layer_mode, model=model)
     # Angle 3: Back 3/4 low
-    renderer.render_model(skin_arr, yaw_deg=145, pitch_deg=-28, ox=620, oy=370, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=145, pitch_deg=-28, ox=620, oy=370, scale=9, layer_mode=layer_mode, model=model)
     # Angle 4: Back straight low (looking up at hood rim/underside)
-    renderer.render_model(skin_arr, yaw_deg=180, pitch_deg=-28, ox=860, oy=370, scale=9, layer_mode=layer_mode)
+    renderer.render_model(skin_arr, yaw_deg=180, pitch_deg=-28, ox=860, oy=370, scale=9, layer_mode=layer_mode, model=model)
 
     out = Image.fromarray(renderer.color_buf)
     if out_path:

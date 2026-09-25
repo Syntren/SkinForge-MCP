@@ -59,24 +59,27 @@ class SkinSession:
     def __init__(self):
         self.canvas = SkinCanvas()
         default_skin = os.path.join(PROJECT_ROOT, "skins", "skin_syntren.png")
-        if not os.path.exists(default_skin) and os.path.exists("/mnt/storage/My/Projects/Skin/skin_syntren.png"):
-            default_skin = "/mnt/storage/My/Projects/Skin/skin_syntren.png"
-        self.file_path: Optional[str] = default_skin
+        custom_skin = os.environ.get("SKINFORGE_DEFAULT_SKIN")
+        if custom_skin and os.path.exists(custom_skin):
+            default_skin = custom_skin
+        self.file_path: Optional[str] = default_skin if os.path.exists(default_skin) else None
         self.is_dirty: bool = False
         self.model: str = "default"  # "default" (Steve 4px) or "slim" (Alex 3px)
         self.viewer_process: Optional[subprocess.Popen] = None
-        self.viewer_port: int = 8080
+        self.viewer_port: int = int(os.environ.get("SKINFORGE_VIEWER_PORT", "8080"))
         self.project_targets: List[str] = [
             os.path.join(PROJECT_ROOT, "skins", "skin_syntren.png"),
-            "/mnt/storage/My/Projects/Skin/skin_syntren.png",
         ]
+        if custom_skin and custom_skin not in self.project_targets:
+            self.project_targets.append(custom_skin)
         self.live_file: str = os.path.join(PROJECT_ROOT, ".live_skin.png")
 
         if self.file_path and os.path.exists(self.file_path):
             try:
                 self.canvas.load_png(self.file_path)
                 self.sync_live()
-            except Exception:
+            except Exception as e:
+                sys.stderr.write(f"[SkinForge] Warning loading default skin: {e}\n")
                 create_base_body(self.canvas, skin_tone="fair")
         else:
             create_base_body(self.canvas, skin_tone="fair")
@@ -86,8 +89,10 @@ class SkinSession:
         try:
             os.makedirs(os.path.dirname(self.live_file), exist_ok=True)
             self.canvas.export_png(self.live_file)
-        except Exception:
-            pass
+            with open(self.live_file + ".model", "w") as f:
+                f.write(self.canvas.model)
+        except Exception as e:
+            sys.stderr.write(f"[SkinForge] Warning syncing live canvas: {e}\n")
 
     def mark_dirty(self):
         """Mark session dirty and trigger instant live viewer update."""
@@ -581,6 +586,13 @@ def skin_search(
     """
     from .rag import get_rag
     rag = get_rag()
+    if rag.count() == 0:
+        return json.dumps({
+            "status": "db_not_initialized",
+            "message": "The RAG database is empty or not yet indexed. Run 'python scripts/ingest_full_dataset.py' or use built-in procedural templates and outfits.",
+            "results": []
+        }, indent=2)
+
     results = rag.search(query=query, limit=min(limit, 20), min_quality=min_quality, render_previews=render_previews)
     if not results:
         return json.dumps({
@@ -715,6 +727,12 @@ def skin_part_search(
     """
     from .rag import get_rag
     rag = get_rag()
+    if rag.count() == 0:
+        return json.dumps({
+            "status": "db_not_initialized",
+            "message": "The RAG database is empty or not yet indexed. Run 'python scripts/ingest_full_dataset.py' to populate it.",
+            "results": []
+        }, indent=2)
     try:
         results = rag.part_search(
             category=category,

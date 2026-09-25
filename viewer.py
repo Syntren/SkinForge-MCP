@@ -13,36 +13,58 @@ import socket
 import base64
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
+try:
+    from http.server import ThreadingHTTPServer
+except ImportError:
+    ThreadingHTTPServer = HTTPServer
 from urllib.parse import parse_qs, urlparse
 import threading
+from PIL import Image
+import numpy as np
 from skinforge import SkinCanvas, get_rag, compute_aesthetic_score
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
-PARENT_DIR = os.path.dirname(BASE_DIR)
 
 def get_skin_path():
+    custom = os.environ.get("SKINFORGE_LIVE_SKIN")
+    if custom and os.path.exists(custom):
+        return custom
     candidates = [
         os.path.join(BASE_DIR, ".live_skin.png"),
-        os.path.join(PARENT_DIR, ".live_skin.png"),
-        os.path.join(PARENT_DIR, "skin_syntren.png"),
         os.path.join(BASE_DIR, "skins", "skin_syntren.png"),
-        os.path.join(BASE_DIR, "skin_syntren.png"),
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return candidates[2]
-
-def get_static_bundle():
-    candidates = [
-        os.path.join(BASE_DIR, "static", "skinview3d.bundle.js"),
-        os.path.join(PARENT_DIR, "SkinForge", "static", "skinview3d.bundle.js"),
     ]
     for p in candidates:
         if os.path.exists(p):
             return p
     return candidates[0]
+
+def get_skin_model(skin_path):
+    if not skin_path or not os.path.exists(skin_path):
+        return "default"
+    model_file = skin_path + ".model"
+    if os.path.exists(model_file):
+        try:
+            with open(model_file, "r") as f:
+                val = f.read().strip().lower()
+                if val in ("slim", "default"):
+                    return val
+        except Exception:
+            pass
+    try:
+        im = Image.open(skin_path).convert("RGBA")
+        arr = np.array(im)
+        if arr.shape[0] >= 64 and arr.shape[1] >= 56:
+            r_unused = np.max(arr[20:32, 54:56, 3])
+            l_unused = np.max(arr[52:64, 46:48, 3])
+            if r_unused == 0 and l_unused == 0:
+                return "slim"
+    except Exception:
+        pass
+    return "default"
+
+def get_static_bundle():
+    return os.path.join(BASE_DIR, "static", "skinview3d.bundle.js")
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="uk">
@@ -642,24 +664,29 @@ HTML_PAGE = """<!DOCTYPE html>
             setInterval(checkSkinUpdate, 300);
         }
 
-        function loadSkinFromSource() {
+        let currentSkinModel = "default";
+
+        function loadSkinFromSource(modelOverride) {
+            if (modelOverride) {
+                currentSkinModel = modelOverride;
+            }
             fetch("/skin-base64?t=" + Date.now())
                 .then(r => r.json())
                 .then(data => {
                     if (data && data.data) {
                         viewer.loadSkin(data.data, {
-                            model: "default",
+                            model: currentSkinModel,
                             makeVisible: true
                         }).then(() => {
                             updateLayers();
-                            document.getElementById("last-update").innerText = "Last updated: " + new Date().toLocaleTimeString();
+                            document.getElementById("last-update").innerText = "Last updated: " + new Date().toLocaleTimeString() + " (" + currentSkinModel + ")";
                         });
                     }
                 })
                 .catch(err => {
                     console.error("Skin loading failed:", err);
                     // Fallback to direct URL
-                    viewer.loadSkin("/skin.png?t=" + Date.now());
+                    viewer.loadSkin("/skin.png?t=" + Date.now(), { model: currentSkinModel });
                 });
         }
 
@@ -756,8 +783,13 @@ HTML_PAGE = """<!DOCTYPE html>
                 const resp = await fetch("/skin-status");
                 if (resp.ok) {
                     const data = await resp.json();
-                    if (lastMtime === 0) {
+                    const modelChanged = data.model && data.model !== currentSkinModel;
+                    if (modelChanged) {
+                        currentSkinModel = data.model;
+                    }
+                    if (lastMtime === 0 || modelChanged) {
                         lastMtime = data.mtime;
+                        loadSkinFromSource();
                     } else if (data.mtime !== lastMtime) {
                         lastMtime = data.mtime;
                         loadSkinFromSource();
@@ -923,7 +955,8 @@ class SkinViewerServer(BaseHTTPRequestHandler):
         elif self.path.startswith("/skin-status"):
             mtime = os.path.getmtime(skin_path) if os.path.exists(skin_path) else 0
             size = os.path.getsize(skin_path) if os.path.exists(skin_path) else 0
-            payload = json.dumps({"mtime": mtime, "size": size}).encode("utf-8")
+            model = get_skin_model(skin_path)
+            payload = json.dumps({"mtime": mtime, "size": size, "model": model}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-cache")
@@ -1048,7 +1081,7 @@ def find_free_port(start_port=8080):
 def main():
     port = find_free_port(8080)
     server_address = ("127.0.0.1", port)
-    httpd = HTTPServer(server_address, SkinViewerServer)
+    httpd = ThreadingHTTPServer(server_address, SkinViewerServer)
     url = f"http://localhost:{port}"
     skin_path = get_skin_path()
 

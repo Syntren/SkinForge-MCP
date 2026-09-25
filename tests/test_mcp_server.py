@@ -212,7 +212,9 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         # Diff against self
         skin_file = os.path.join(os.path.dirname(__file__), "..", "skins", "skin_syntren.png")
         if not os.path.exists(skin_file):
-            skin_file = "/mnt/storage/My/Projects/Skin/skin_syntren.png"
+            custom = os.environ.get("SKINFORGE_DEFAULT_SKIN")
+            if custom and os.path.exists(custom):
+                skin_file = custom
         if os.path.exists(skin_file):
             self.call("skin_load", {"file_path": skin_file})
             res_diff = self.call("skin_diff", {"other_file_path": skin_file})
@@ -367,6 +369,17 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         res_conv = self.call("skin_convert_model", {"target_model": "slim"})
         self.assertIn("Successfully converted skin geometry to slim", res_conv.content[0].text)
         self.assertEqual(session.model, "slim")
+
+        # Validate and export slim model without exceptions
+        val_slim = self.call("skin_validate", {})
+        self.assertIn("Zero visual warnings", val_slim.content[0].text)
+
+        tmp_slim = "/tmp/test_mcp_slim_save.png"
+        res_save = self.call("skin_save", {"file_path": tmp_slim, "update_previews": False})
+        self.assertIn("Saved 64x64 skin", res_save.content[0].text)
+        self.assertTrue(os.path.exists(tmp_slim))
+        if os.path.exists(tmp_slim):
+            os.remove(tmp_slim)
 
 
 

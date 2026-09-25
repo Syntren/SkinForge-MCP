@@ -26,7 +26,8 @@ from .vision import extract_visual_features, compute_visual_similarity
 
 # Default paths
 DEFAULT_DB_DIR = Path(__file__).parent.parent / "data"
-DEFAULT_DB_PATH = DEFAULT_DB_DIR / "skins_rag.db"
+_custom_db = os.environ.get("SKINFORGE_DB_PATH")
+DEFAULT_DB_PATH = Path(_custom_db) if _custom_db else DEFAULT_DB_DIR / "skins_rag.db"
 DEFAULT_PREVIEW_DIR = Path(__file__).parent.parent / "previews"
 
 STOP_WORDS = {

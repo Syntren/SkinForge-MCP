@@ -97,34 +97,108 @@ MINECRAFT_UV_MAP = {
 }
 
 
+MINECRAFT_UV_MAP_STEVE = MINECRAFT_UV_MAP
+
+MINECRAFT_UV_MAP_SLIM = dict(MINECRAFT_UV_MAP)
+MINECRAFT_UV_MAP_SLIM.update({
+    # Right Arm Base (Layer 1) - 3px width
+    "right_arm_top":    (44, 16, 47, 20),
+    "right_arm_bottom": (47, 16, 50, 20),
+    "right_arm_right":  (40, 20, 44, 32),
+    "right_arm_front":  (44, 20, 47, 32),
+    "right_arm_left":   (47, 20, 51, 32),
+    "right_arm_back":   (51, 20, 54, 32),
+
+    # Left Arm Base (Layer 1) - 3px width
+    "left_arm_top":    (36, 48, 39, 52),
+    "left_arm_bottom": (39, 48, 42, 52),
+    "left_arm_right":  (32, 52, 36, 64),
+    "left_arm_front":  (36, 52, 39, 64),
+    "left_arm_left":   (39, 52, 43, 64),
+    "left_arm_back":   (43, 52, 46, 64),
+
+    # Right Sleeve Outer (Layer 2) - 3px width
+    "right_sleeve_top":    (44, 32, 47, 36),
+    "right_sleeve_bottom": (47, 32, 50, 36),
+    "right_sleeve_right":  (40, 36, 44, 48),
+    "right_sleeve_front":  (44, 36, 47, 48),
+    "right_sleeve_left":   (47, 36, 51, 48),
+    "right_sleeve_back":   (51, 36, 54, 48),
+
+    # Left Sleeve Outer (Layer 2) - 3px width
+    "left_sleeve_top":    (52, 48, 55, 52),
+    "left_sleeve_bottom": (55, 48, 58, 52),
+    "left_sleeve_right":  (48, 52, 52, 64),
+    "left_sleeve_front":  (52, 52, 55, 64),
+    "left_sleeve_left":   (55, 52, 59, 64),
+    "left_sleeve_back":   (59, 52, 62, 64),
+})
+
+
+def get_uv_map(model: str = "default") -> dict:
+    """Return UV coordinate mapping for 'default' (Steve 4px) or 'slim' (Alex 3px) models."""
+    if model and model.lower() == "slim":
+        return MINECRAFT_UV_MAP_SLIM
+    return MINECRAFT_UV_MAP_STEVE
+
+
 class SkinCanvas:
     """Convenient, layer-aware authoring canvas for 64x64 Minecraft skins."""
-    def __init__(self):
+    def __init__(self, model: str = "default"):
+        self.model = "slim" if model and model.lower() == "slim" else "default"
         self.parts = {}
-        for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
+        uv_map = self.get_uv_map()
+        for name, (u0, v0, u1, v1) in uv_map.items():
             w = u1 - u0
             h = v1 - v0
             self.parts[name] = np.zeros((h, w, 4), dtype=np.uint8)
-        self.model = "default"
         self.history = []
         self.future = []
         self.checkpoints = {}
 
-    def load_png(self, path):
+    def get_uv_map(self) -> dict:
+        """Return UV coordinate mapping corresponding to this canvas's current model."""
+        return get_uv_map(self.model)
+
+    def set_model(self, model: str):
+        """Set model geometry ('default' or 'slim') and adapt part dimensions if necessary."""
+        from .converter import convert_skin_model
+        convert_skin_model(self, target_model=model)
+
+    def load_png(self, path, model=None):
         """Load an existing 64x64 skin PNG into parts."""
         im = Image.open(path).convert("RGBA")
         if im.size != (64, 64):
             raise ValueError(f"Skin image must be 64x64, got {im.size}")
         arr = np.array(im)
-        for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
+        if model is not None:
+            self.model = "slim" if model.lower() == "slim" else "default"
+        else:
+            # Check for official slim skin transparency signature if canvas model is slim
+            r_arm_unused = np.max(arr[20:32, 54:56, 3]) if arr.shape[0] >= 32 and arr.shape[1] >= 56 else 255
+            l_arm_unused = np.max(arr[52:64, 46:48, 3]) if arr.shape[0] >= 64 and arr.shape[1] >= 48 else 255
+            if r_arm_unused == 0 and l_arm_unused == 0 and self.model == "slim":
+                self.model = "slim"
+
+        uv_map = self.get_uv_map()
+        for name, (u0, v0, u1, v1) in uv_map.items():
             self.parts[name] = arr[v0:v1, u0:u1].copy()
 
     def to_array(self) -> np.ndarray:
         """Assemble all parts into a 64x64x4 RGBA numpy array."""
         arr = np.zeros((64, 64, 4), dtype=np.uint8)
-        for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
+        uv_map = self.get_uv_map()
+        for name, (u0, v0, u1, v1) in uv_map.items():
             if name in self.parts:
-                arr[v0:v1, u0:u1] = self.parts[name]
+                part = self.parts[name]
+                expected_shape = (v1 - v0, u1 - u0, 4)
+                if part.shape == expected_shape:
+                    arr[v0:v1, u0:u1] = part
+                else:
+                    # Resample if shape doesn't match expected dimensions
+                    im_part = Image.fromarray(part, mode="RGBA")
+                    im_resized = im_part.resize((u1 - u0, v1 - v0), Image.Resampling.NEAREST)
+                    arr[v0:v1, u0:u1] = np.array(im_resized, dtype=np.uint8)
         return arr
 
     def to_image(self) -> Image.Image:

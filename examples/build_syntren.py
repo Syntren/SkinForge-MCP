@@ -589,10 +589,14 @@ def build_syntren():
     skin_path = os.path.join(out_dir, "skins", "skin_syntren.png")
     canvas.export_png(skin_path)
 
-    # Copy to root and output for user convenience
+    # Optional additional export targets
     import shutil
-    shutil.copy(skin_path, "/mnt/storage/My/Projects/Skin/skin_syntren.png")
-    shutil.copy(skin_path, "/mnt/storage/My/Projects/Skin/output/skin_final.png")
+    extra_export = os.environ.get("SKINFORGE_EXPORT_DIR")
+    if extra_export and os.path.exists(extra_export):
+        shutil.copy(skin_path, os.path.join(extra_export, "skin_syntren.png"))
+        out_sub = os.path.join(extra_export, "output")
+        if os.path.exists(out_sub):
+            shutil.copy(skin_path, os.path.join(out_sub, "skin_final.png"))
 
     # Render previews
     p3d = os.path.join(out_dir, "previews", "3d_turnaround.png")
@@ -602,10 +606,10 @@ def build_syntren():
     render_composite_2d(skin_path, p2d)
     render_bottom_up(skin_path, p_bot)
 
-    # Also update root previews
-    shutil.copy(p3d, "/mnt/storage/My/Projects/Skin/preview_3d_turnaround.png")
-    shutil.copy(p2d, "/mnt/storage/My/Projects/Skin/preview_2d.png")
-    shutil.copy(p_bot, "/mnt/storage/My/Projects/Skin/preview_bottom_up.png")
+    if extra_export and os.path.exists(extra_export):
+        shutil.copy(p3d, os.path.join(extra_export, "preview_3d_turnaround.png"))
+        shutil.copy(p2d, os.path.join(extra_export, "preview_2d.png"))
+        shutil.copy(p_bot, os.path.join(extra_export, "preview_bottom_up.png"))
 
     # Run validator
     validator = SkinValidator(skin_path)

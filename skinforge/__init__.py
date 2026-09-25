@@ -2,9 +2,15 @@
 SkinForge - Autonomous Minecraft Skin Authoring, Inspection & 3D/2D Rendering Toolkit.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
-from .canvas import SkinCanvas, MINECRAFT_UV_MAP
+from .canvas import (
+    SkinCanvas,
+    MINECRAFT_UV_MAP,
+    MINECRAFT_UV_MAP_STEVE,
+    MINECRAFT_UV_MAP_SLIM,
+    get_uv_map,
+)
 from .renderer import (
     Minecraft3DRenderer,
     render_composite_2d,
@@ -45,6 +51,9 @@ __all__ = [
     "__version__",
     "SkinCanvas",
     "MINECRAFT_UV_MAP",
+    "MINECRAFT_UV_MAP_STEVE",
+    "MINECRAFT_UV_MAP_SLIM",
+    "get_uv_map",
     "Minecraft3DRenderer",
     "render_composite_2d",
     "render_3d_turnaround",

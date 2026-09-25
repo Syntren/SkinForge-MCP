@@ -10,25 +10,38 @@ from .canvas import MINECRAFT_UV_MAP, SkinCanvas
 
 
 class SkinValidator:
-    def __init__(self, skin_source):
+    def __init__(self, skin_source, model=None):
         self.source_desc = "in-memory canvas"
+        self.model = model
         if isinstance(skin_source, str):
             self.source_desc = skin_source
             self.im = Image.open(skin_source).convert("RGBA")
             self.arr = np.array(self.im)
+            if self.model is None and self.arr.shape[0] >= 64 and self.arr.shape[1] >= 56:
+                r_unused = np.max(self.arr[20:32, 54:56, 3])
+                l_unused = np.max(self.arr[52:64, 46:48, 3])
+                if r_unused == 0 and l_unused == 0:
+                    self.model = "slim"
         elif isinstance(skin_source, SkinCanvas):
-            self.arr = np.zeros((64, 64, 4), dtype=np.uint8)
-            for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
-                self.arr[v0:v1, u0:u1] = skin_source.parts[name]
+            self.model = skin_source.model
+            self.arr = skin_source.to_array()
             self.im = Image.fromarray(self.arr)
         elif isinstance(skin_source, Image.Image):
             self.im = skin_source.convert("RGBA")
             self.arr = np.array(self.im)
+            if self.model is None and self.arr.shape[0] >= 64 and self.arr.shape[1] >= 56:
+                r_unused = np.max(self.arr[20:32, 54:56, 3])
+                l_unused = np.max(self.arr[52:64, 46:48, 3])
+                if r_unused == 0 and l_unused == 0:
+                    self.model = "slim"
         elif isinstance(skin_source, np.ndarray):
             self.arr = skin_source.copy()
             self.im = Image.fromarray(self.arr)
         else:
             raise TypeError(f"Unsupported skin source type: {type(skin_source)}")
+
+        if not self.model:
+            self.model = "default"
 
         self.issues = []
         self.warnings = []
@@ -100,9 +113,11 @@ class SkinValidator:
             self.issues.append(f"Image dimensions must be 64x64, found {self.im.size}")
 
     def _check_base_layer_holes(self):
-        base_parts = [k for k in MINECRAFT_UV_MAP.keys() if not any(x in k for x in ['hat', 'jacket', 'sleeve', 'pants'])]
+        from .canvas import get_uv_map
+        uv_map = get_uv_map(self.model)
+        base_parts = [k for k in uv_map.keys() if not any(x in k for x in ['hat', 'jacket', 'sleeve', 'pants'])]
         for name in base_parts:
-            u0, v0, u1, v1 = MINECRAFT_UV_MAP[name]
+            u0, v0, u1, v1 = uv_map[name]
             crop = self.arr[v0:v1, u0:u1]
             holes = int(np.sum(crop[:, :, 3] < 255))
             if holes > 0:
@@ -163,10 +178,14 @@ def compute_aesthetic_score(canvas_or_arr) -> Dict[str, Any]:
     """
     if hasattr(canvas_or_arr, "arr"):
         arr = canvas_or_arr.arr
+    elif hasattr(canvas_or_arr, "to_array"):
+        arr = canvas_or_arr.to_array()
     elif hasattr(canvas_or_arr, "get_part"):
-        # Synthesize 64x64 array from parts
+        from .canvas import get_uv_map
+        model = getattr(canvas_or_arr, "model", "default")
+        uv_map = get_uv_map(model)
         arr = np.zeros((64, 64, 4), dtype=np.uint8)
-        for part_name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
+        for part_name, (u0, v0, u1, v1) in uv_map.items():
             arr[v0:v1, u0:u1] = canvas_or_arr.get_part(part_name)
     else:
         arr = np.array(canvas_or_arr, dtype=np.uint8)

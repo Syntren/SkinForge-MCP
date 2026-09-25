@@ -110,6 +110,49 @@ class TestV1Features(unittest.TestCase):
         img_results = rag.search_by_image(img_a, limit=2)
         self.assertIsInstance(img_results, list)
 
+    def test_alex_slim_model_roundtrip_and_rendering(self):
+        import os
+        from skinforge.converter import convert_skin_model
+        from skinforge.renderer import render_3d_turnaround, render_composite_2d
+
+        # 1. Convert Steve -> Alex Slim (3px arms)
+        c = SkinCanvas()
+        res_slim = convert_skin_model(c, target_model="slim")
+        self.assertEqual(res_slim["status"], "converted")
+        self.assertEqual(c.model, "slim")
+        self.assertEqual(c.parts["right_arm_front"].shape, (12, 3, 4))
+        self.assertEqual(c.parts["right_arm_top"].shape, (4, 3, 4))
+
+        # 2. Export slim canvas to PNG (assert shape 64x64)
+        tmp_slim = "/tmp/test_alex_slim.png"
+        c.export_png(tmp_slim)
+        self.assertTrue(os.path.exists(tmp_slim))
+        with Image.open(tmp_slim) as im_slim:
+            self.assertEqual(im_slim.size, (64, 64))
+
+        # 3. Load slim PNG into fresh canvas and verify slim geometry
+        c_loaded = SkinCanvas(model="slim")
+        c_loaded.load_png(tmp_slim)
+        self.assertEqual(c_loaded.parts["right_arm_front"].shape, (12, 3, 4))
+
+        # 4. Convert back Slim -> Steve (4px arms)
+        res_steve = convert_skin_model(c_loaded, target_model="default")
+        self.assertEqual(res_steve["status"], "converted")
+        self.assertEqual(c_loaded.model, "default")
+        self.assertEqual(c_loaded.parts["right_arm_front"].shape, (12, 4, 4))
+
+        # 5. Render 3D turnaround and 2D composite for slim model without exceptions
+        tmp_3d = "/tmp/test_alex_slim_3d.png"
+        tmp_2d = "/tmp/test_alex_slim_2d.png"
+        render_3d_turnaround(c, out_path=tmp_3d)
+        render_composite_2d(c, out_path=tmp_2d)
+        self.assertTrue(os.path.exists(tmp_3d))
+        self.assertTrue(os.path.exists(tmp_2d))
+
+        for p in [tmp_slim, tmp_3d, tmp_2d]:
+            if os.path.exists(p):
+                os.remove(p)
+
     def test_mcp_registered_tools(self):
         tools = server._tool_manager._tools
         self.assertIn('skin_assemble', tools)

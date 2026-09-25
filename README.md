@@ -2,11 +2,11 @@
 
 **Autonomous Model Context Protocol (MCP) Server & Procedural Engine for Minecraft Skins.**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/Syntren/SkinForge-MCP/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/Syntren/SkinForge-MCP/releases)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0%20Compliant-purple.svg)](https://modelcontextprotocol.io/)
 [![Tools](https://img.shields.io/badge/MCP%20Tools-54%20Native%20Tools-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-30%2F30%20Passed-success.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-31%2F31%20Passed-success.svg)]()
 [![WebGL](https://img.shields.io/badge/Viewer-Three.js%20WebGL-orange.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -49,6 +49,8 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 ### 6. Real-Time 3D WebGL Viewer with Live Sync (`viewer.py`)
 - **Interactive Three.js Player**: Orbit rotate (Left Click drag), pan (Right Click drag), zoom (Scroll), and preview walk/run animations.
 - **Instant Reactive Updates (300ms)**: The moment an AI agent or developer calls an editing tool, the 3D model in the browser automatically updates its texture with zero lag, preserving camera angles and animation state.
+- **Multi-threaded Architecture (`ThreadingHTTPServer`)**: Prevents blocking of status polling during intensive assembly or generation tasks.
+- **Dynamic Model Synchronization**: Auto-detects and updates between classic Steve (4px) and Alex Slim (3px) geometries on-the-fly without refreshing the page.
 - **Live Status Indicator**: Header dot pulses violet when updates arrive and returns to emerald green.
 
 ### 7. Dual-Layer 3D Depth Discipline (The 4 Golden Rules)
@@ -70,9 +72,9 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 - **3×5 Pixel Font Matrix (`skin_draw_text`)**: Writes crisp letters (A–Z), numbers (0–9), and punctuation (!, ?, -, :, .) on any face.
 - **Emblem Library (`skin_draw_symbol`)**: Instantly stamps cyber emblems (`cyber_s` 6×8 crest, `heart`, `star`, `lightning`, `skull`, `cross`) without coordinate guesswork.
 
-### 11. Full Outfits Macro & Model Converter
+### 11. Full Outfits Macro & Model Converter (Steve 4px ⟷ Alex 3px Slim)
 - **Coordinated Outfits (`skin_apply_outfit`)**: Applies full-body anatomical outfits (`techwear_hoodie`, `cargo_streetwear`, `casual_tshirt`) across Layer 1 and Layer 2 in a single call.
-- **Geometry Converter (`skin_convert_model`)**: Seamlessly converts between classic Steve (4px arms) and Alex Slim (3px arms) with UV island resampling.
+- **Complete Alex Slim (3px) Geometry & UV Engine (`skin_convert_model`)**: Seamless bidirectional conversion between Steve (4px) and Alex Slim (3px) with official Minecraft UV island resampling (`MINECRAFT_UV_MAP_SLIM`). Full support for export, loading, validation, and 3D software rendering.
 
 ### 12. Multi-Target Synchronization & Auto-Previews (`skin_save`)
 - Automatically saves to primary destination, synchronizes across canonical project paths, and regenerates 2D composite, 3D turnaround, and bottom-up previews in one atomic tool call.
@@ -80,6 +82,9 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 ### 13. Canvas History, Undo/Redo & Named Checkpoints
 - Full undo/redo stack (`skin_undo`, `skin_redo`).
 - Save milestone snapshots (`skin_checkpoint`) and instantly roll back (`skin_restore_checkpoint`).
+
+### 14. 100% Portable & Zero Hardcoded Paths
+- Fully portable across any Linux, macOS, or Windows environment using dynamic relative paths and environment variable overrides (`SKINFORGE_DEFAULT_SKIN`, `SKINFORGE_DB_PATH`, `SKINFORGE_VIEWER_PORT`, `SKINFORGE_LIVE_SKIN`, `SKINFORGE_EXPORT_DIR`).
 
 ---
 

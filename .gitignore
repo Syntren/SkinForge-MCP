@@ -24,7 +24,7 @@ env/
 *.swo
 
 # Live runtime staging & image binaries
-.live_skin.png
+.live_skin.png*
 *.png
 *.jpg
 *.jpeg
