@@ -5,7 +5,7 @@
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/Syntren/SkinForge-MCP/releases)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0%20Compliant-purple.svg)](https://modelcontextprotocol.io/)
-[![Tools](https://img.shields.io/badge/MCP%20Tools-52%20Native%20Tools-brightgreen.svg)]()
+[![Tools](https://img.shields.io/badge/MCP%20Tools-54%20Native%20Tools-brightgreen.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-30%2F30%20Passed-success.svg)]()
 [![WebGL](https://img.shields.io/badge/Viewer-Three.js%20WebGL-orange.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -16,9 +16,11 @@ SkinForge is an all-in-one professional toolkit designed for both **human skin a
 
 ## 🌟 Key Features
 
-### 1. 52 Native MCP Tools for AI Agents
+### 1. 54 Native MCP Tools for AI Agents
 - **Model Context Protocol (MCP) Compliant**: Enables LLMs to design, recolor, audit, assemble, and verify skins directly over stdio or SSE.
 - **Full Skin Assembly & VLM Fine-Tuning (`skin_build`)**: Assembles complete 64×64 dual-layer skins in a single atomic call using a global palette and ASCII matrices (~1,200 tokens vs 20,000 for raw pixels), purpose-built for Vision-Language model fine-tuning.
+- **Granular Part Transfer (`skin_import_part`)**: Import any individual anatomical UV part (e.g. face, bangs, sleeve emblem) from an external skin or RAG skin ID directly into the active editing session in a single call.
+- **Autonomous Denoising & Palette Cleaning (`skin_denoise_palette`)**: Scans and cleans compression artifacts and isolated noise pixels, harmonizing colors into crisp, authentic pixel-art palettes.
 - **Direct Reference Sampling (`skin_sample_reference`)**: Samples exact colors or extracts dominant palettes from concept art and screenshots without writing Python scripts.
 - **Multimodal Visual Feedback (`skin_render_3d`, `skin_render_2d`)**: Generates and returns base64 PNG turnaround images directly inside tool results for autonomous visual verification.
 
@@ -93,7 +95,7 @@ SkinForge/
 ├── viewer.py                  # Interactive 3D WebGL viewer server (port 8080)
 ├── skinforge/                 # Core library
 │   ├── __init__.py            # Public exports (v1.0.0)
-│   ├── mcp_server.py          # MCPServer implementation (52 tools, 4 resources, 2 prompts)
+│   ├── mcp_server.py          # MCPServer implementation (54 tools, 4 resources, 2 prompts)
 │   ├── canvas.py              # SkinCanvas, 72 UV parts, undo/redo, HSV adjustments
 │   ├── modular.py             # Lego Constructor: assembly & isolated module mannequin preview
 │   ├── vision.py              # Spatial-color pyramid visual concept & image search

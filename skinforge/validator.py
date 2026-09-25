@@ -200,14 +200,14 @@ def compute_aesthetic_score(canvas_or_arr) -> Dict[str, Any]:
     else:
         unique_colors = 0
 
-    if 16 <= unique_colors <= 65:
+    if 16 <= unique_colors <= 70:
         score_colors = 1.0
     elif 8 <= unique_colors < 16:
         score_colors = 0.4 + (unique_colors - 8) * 0.075
     elif unique_colors < 8:
         score_colors = 0.15
-    elif 65 < unique_colors <= 140:
-        score_colors = 1.0 - (unique_colors - 65) * 0.005
+    elif 70 < unique_colors <= 140:
+        score_colors = 1.0 - (unique_colors - 70) * 0.005
     else:
         score_colors = 0.5  # extreme random noise / photo artifacts
 

@@ -71,7 +71,11 @@ When asked to design a skin (e.g. *"cyberpunk samurai"*, *"purple scarf ninja"*,
 6. `skin_remix(base_skin_id, overlay_skin_id, parts_to_take=None, auto_fix=True)`:
    - Takes the base body/armor from `base_skin_id` and transfers accessories/outer layers (e.g. scarf, jacket, hood) from `overlay_skin_id`.
    - Automatically heals Layer 1 and Layer 2 geometry.
-7. `skin_rag_status()`:
+7. `skin_import_part(source, part_name, target_part_name=None)`:
+   - Granular anatomical part transfer: imports a specific UV part (e.g. 'head_front', 'hat_front', 'jacket_back') from another skin file or RAG skin_id directly into the active editing session.
+8. `skin_denoise_palette(min_pixel_count=3, part_name=None)`:
+   - Autonomous pixel-art noise cleaner: replaces isolated compression artifacts and rogue single pixels with their closest dominant palette color.
+9. `skin_rag_status()`:
    - Returns the number of indexed skins and database health.
 
 ### RAG-Powered Design Workflow:

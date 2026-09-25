@@ -822,6 +822,83 @@ def skin_search_by_image(
 
 
 @server.tool()
+def skin_denoise_palette(
+    min_pixel_count: int = 3,
+    part_name: Optional[str] = None
+) -> str:
+    """
+    Automatically clean up compression noise and isolated color artifacts.
+    Replaces pixels that appear fewer than `min_pixel_count` times with their
+    closest dominant palette color, achieving clean pixel-art aesthetics.
+    
+    Args:
+        min_pixel_count: Minimum times a color must appear to be considered legitimate palette color (default: 3).
+        part_name: Optional part to limit denoising to (or None for entire skin).
+    """
+    try:
+        modified = session.canvas.denoise_palette(min_pixel_count=min_pixel_count, part_name=part_name)
+        session.mark_dirty()
+        colors = session.canvas.list_colors(top_n=100)
+        return json.dumps({
+            "status": "success",
+            "modified_pixels": modified,
+            "current_unique_colors": len(colors),
+            "message": f"Denoised palette: healed {modified} artifact pixels. Unique colors now: {len(colors)}."
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def skin_import_part(
+    source: str,
+    part_name: str,
+    target_part_name: Optional[str] = None
+) -> str:
+    """
+    Import an individual anatomical part from an external skin (file path or RAG skin_id)
+    directly into the active editing session.
+    
+    Args:
+        source: External skin PNG file path OR RAG skin_id (e.g. 'skin_syntren_tuxedo.png' or '019a5f6e...').
+        part_name: Name of the part to import (e.g. 'head_front', 'hat_front', 'jacket_front').
+        target_part_name: Optional target part name (defaults to same as part_name).
+    """
+    from .canvas import MINECRAFT_UV_MAP, SkinCanvas
+    from .rag import get_rag
+    
+    if part_name not in MINECRAFT_UV_MAP:
+        return json.dumps({"error": f"Invalid part_name: '{part_name}'"})
+        
+    dst_name = target_part_name or part_name
+    if dst_name not in MINECRAFT_UV_MAP:
+        return json.dumps({"error": f"Invalid target_part_name: '{dst_name}'"})
+        
+    try:
+        src_canvas = SkinCanvas()
+        if os.path.exists(source):
+            src_canvas.load_png(source)
+        else:
+            rag = get_rag()
+            s_data = rag.get_skin(source, as_canvas=True, as_ascii=False)
+            if not s_data or "canvas" not in s_data:
+                return json.dumps({"error": f"Source '{source}' is neither a valid file path nor an existing skin_id"})
+            src_canvas = s_data["canvas"]
+            
+        session.canvas.push_undo()
+        session.canvas.set_part(dst_name, src_canvas.get_part(part_name))
+        session.mark_dirty()
+        
+        return json.dumps({
+            "status": "success",
+            "message": f"Successfully imported '{part_name}' from '{source}' into '{dst_name}'. Live viewer updated."
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+
+@server.tool()
 def skin_build(
     palette: Dict[str, str],
     parts: Dict[str, str],

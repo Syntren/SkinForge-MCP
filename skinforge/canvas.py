@@ -381,6 +381,51 @@ class SkinCanvas:
                 count += 1
         return count
 
+    def denoise_palette(self, min_pixel_count: int = 3, part_name: Optional[str] = None) -> int:
+        """
+        Denoise / quantize palette by replacing rare, isolated color pixels
+        (often artifacts from JPEG compression or imprecise resizing) with
+        their closest dominant palette neighbor.
+        Returns the number of pixels modified.
+        """
+        self.push_undo()
+        parts_to_scan = [part_name] if part_name else list(self.parts.keys())
+        
+        # Collect all opaque pixels
+        all_pixels = []
+        for p in parts_to_scan:
+            arr = self.parts[p]
+            mask = arr[:, :, 3] > 128
+            if np.any(mask):
+                all_pixels.append(arr[mask][:, :3])
+        
+        if not all_pixels:
+            return 0
+            
+        stacked = np.vstack(all_pixels)
+        unique, counts = np.unique(stacked, axis=0, return_counts=True)
+        dominant_palette = unique[counts >= min_pixel_count]
+        
+        if len(dominant_palette) == 0:
+            return 0
+            
+        modified_count = 0
+        for p in parts_to_scan:
+            arr = self.parts[p]
+            mask = arr[:, :, 3] > 128
+            for y in range(arr.shape[0]):
+                for x in range(arr.shape[1]):
+                    if arr[y, x, 3] > 128:
+                        rgb = arr[y, x, :3]
+                        # Check if color is rare (count < min_pixel_count)
+                        color_idx = np.where((unique == rgb).all(axis=1))[0]
+                        if len(color_idx) > 0 and counts[color_idx[0]] < min_pixel_count:
+                            dists = np.sum((dominant_palette - rgb)**2, axis=1)
+                            closest = dominant_palette[np.argmin(dists)]
+                            arr[y, x, :3] = closest
+                            modified_count += 1
+        return modified_count
+
     def replace_color(self, old_color, new_color, part_name=None, tolerance=15, layer="both"):
         """
         Replace occurrences of old_color with new_color within RGB tolerance threshold.
