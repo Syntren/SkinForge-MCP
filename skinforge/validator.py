@@ -165,7 +165,6 @@ def compute_aesthetic_score(canvas_or_arr) -> Dict[str, Any]:
         arr = canvas_or_arr.arr
     elif hasattr(canvas_or_arr, "get_part"):
         # Synthesize 64x64 array from parts
-        from .canvas import MINECRAFT_UV_MAP
         arr = np.zeros((64, 64, 4), dtype=np.uint8)
         for part_name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
             arr[v0:v1, u0:u1] = canvas_or_arr.get_part(part_name)
@@ -220,12 +219,12 @@ def compute_aesthetic_score(canvas_or_arr) -> Dict[str, Any]:
         std_scores.append(float(np.mean(np.std(face_rgb, axis=(0, 1)))))
 
     mean_std = float(np.mean(std_scores))
-    if 12.0 <= mean_std <= 55.0:
+    if 12.0 <= mean_std <= 85.0:
         score_shading = 1.0
     elif mean_std < 12.0:
         score_shading = max(0.1, mean_std / 12.0)
     else:
-        score_shading = max(0.6, 1.0 - (mean_std - 55.0) * 0.01)
+        score_shading = max(0.6, 1.0 - (mean_std - 85.0) * 0.01)
 
     # Weighted overall score
     overall = float(0.40 * score_l2 + 0.35 * score_colors + 0.25 * score_shading)
