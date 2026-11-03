@@ -1,0 +1,63 @@
+"""
+SkinForge Core Architecture Package (UV Single Source of Truth, Canvas, Thread-Safe Session).
+"""
+
+from .uv import (
+    ALL_PARTS,
+    BASE_PARTS,
+    BASE_TO_OUTER_MAP,
+    MINECRAFT_UV_MAP,
+    MINECRAFT_UV_MAP_CLASSIC,
+    MINECRAFT_UV_MAP_SLIM,
+    MINECRAFT_UV_MAP_STEVE,
+    OUTER_PARTS,
+    OUTER_TO_BASE_MAP,
+    OVERLAY_PARTS,
+    UV_SPEC_BY_NAME,
+    UV_ZONE_SPECS,
+    UVBox,
+    UVZoneSpec,
+    convert_legacy_64x32_to_64x64,
+    detect_skin_model_from_array,
+    get_uv_map,
+    is_base_part,
+    is_outer_part,
+    is_slim_model,
+    load_skin_array,
+    lookup_uv_coord,
+    normalize_model_name,
+)
+from .canvas import MAX_HISTORY_STATES, CanvasSnapshot, SkinCanvas, atomic_save_png
+from .session import SkinSession, atomic_write_text
+
+__all__ = [
+    "ALL_PARTS",
+    "BASE_PARTS",
+    "BASE_TO_OUTER_MAP",
+    "MINECRAFT_UV_MAP",
+    "MINECRAFT_UV_MAP_CLASSIC",
+    "MINECRAFT_UV_MAP_SLIM",
+    "MINECRAFT_UV_MAP_STEVE",
+    "OUTER_PARTS",
+    "OUTER_TO_BASE_MAP",
+    "OVERLAY_PARTS",
+    "UV_SPEC_BY_NAME",
+    "UV_ZONE_SPECS",
+    "UVBox",
+    "UVZoneSpec",
+    "convert_legacy_64x32_to_64x64",
+    "detect_skin_model_from_array",
+    "get_uv_map",
+    "is_base_part",
+    "is_outer_part",
+    "is_slim_model",
+    "load_skin_array",
+    "lookup_uv_coord",
+    "normalize_model_name",
+    "MAX_HISTORY_STATES",
+    "CanvasSnapshot",
+    "SkinCanvas",
+    "atomic_save_png",
+    "SkinSession",
+    "atomic_write_text",
+]

@@ -1,59 +1,136 @@
 """
-SkinForge - Autonomous Minecraft Skin Authoring, Inspection & 3D/2D Rendering Toolkit.
+SkinForge v1.3.0 - Autonomous Minecraft Skin Authoring, Inspection, RAG & 3D/2D Rendering Toolkit.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
-from .canvas import (
-    SkinCanvas,
+from .core import (
+    ALL_PARTS,
+    BASE_PARTS,
+    BASE_TO_OUTER_MAP,
+    MAX_HISTORY_STATES,
     MINECRAFT_UV_MAP,
-    MINECRAFT_UV_MAP_STEVE,
+    MINECRAFT_UV_MAP_CLASSIC,
     MINECRAFT_UV_MAP_SLIM,
+    MINECRAFT_UV_MAP_STEVE,
+    OUTER_PARTS,
+    OUTER_TO_BASE_MAP,
+    OVERLAY_PARTS,
+    CanvasSnapshot,
+    SkinCanvas,
+    SkinSession,
+    atomic_save_png,
+    atomic_write_text,
+    convert_legacy_64x32_to_64x64,
+    detect_skin_model_from_array,
     get_uv_map,
+    is_base_part,
+    is_outer_part,
+    is_slim_model,
+    load_skin_array,
+    lookup_uv_coord,
+    normalize_model_name,
 )
-from .renderer import (
-    Minecraft3DRenderer,
-    render_composite_2d,
-    render_3d_turnaround,
-    render_3d_single,
-    render_part_zoomed,
-    render_turntable_gif,
-    render_bottom_up,
-)
-from .validator import SkinValidator, compute_aesthetic_score, detect_pillow_shading
-from .palettes import (
-    TECHWEAR_CYBERPUNK,
+from .color import (
     ANIME_SKIN,
     CASUAL_STREETWEAR,
     FANTASY_KNIGHT,
+    TECHWEAR_CYBERPUNK,
+    adjust_rgba_hsl,
+    adjust_rgba_hsv,
+    cielab_to_rgb,
+    extract_opaque_mask,
+    extract_opaque_rgb,
     generate_color_ramp,
+    hsl_to_rgb,
+    hsv_to_rgb,
+    rgb_to_cielab,
+    rgb_to_hsl,
+    rgb_to_hsv,
+)
+from .audit import (
+    SEAM_PAIRS,
+    SkinValidator,
+    align_seams,
+    auto_fix_skin,
+    check_seams,
+    compute_aesthetic_score,
+    detect_pillow_shading,
+    evaluate_golden_rules,
+)
+from .rag import (
+    FEATURE_DIM,
+    SkinRAG,
+    compute_visual_similarity,
+    extract_visual_features,
+    get_rag,
+    pack_feature_blob,
+    pack_rag_database,
+    set_rag_db_path,
+    unpack_feature_blob,
+)
+from .renderer import (
+    Minecraft3DRenderer,
+    render_3d_single,
+    render_3d_turnaround,
+    render_bottom_up,
+    render_composite_2d,
+    render_part_zoomed,
+    render_turntable_gif,
 )
 from .presets import (
     draw_anime_eyes_2x2,
-    draw_hoodie_drawstrings,
     draw_cargo_pocket,
     draw_hair_bangs,
-    draw_sneakers,
     draw_headphones,
+    draw_hoodie_drawstrings,
+    draw_sneakers,
 )
-from .ascii_codec import normalize_color, rgba_to_hex, part_to_ascii, canvas_to_ascii
-from .templates import create_base_body, SKIN_TONE_PALETTES
+from .ascii_codec import canvas_to_ascii, normalize_color, part_to_ascii, rgba_to_hex
+from .templates import SKIN_TONE_PALETTES, create_base_body
 from .sampler import sample_image
-from .seams import check_seams, align_seams
-from .typography import draw_text, draw_symbol
+from .typography import draw_symbol, draw_text
 from .outfits import apply_outfit
 from .converter import convert_skin_model
-from .rag import SkinRAG, get_rag
 from .modular import ANATOMICAL_MODULES, assemble_skin, render_isolated_module
-from .vision import extract_visual_features, compute_visual_similarity
 
 __all__ = [
     "__version__",
     "SkinCanvas",
+    "SkinSession",
+    "CanvasSnapshot",
+    "MAX_HISTORY_STATES",
+    "atomic_save_png",
+    "atomic_write_text",
     "MINECRAFT_UV_MAP",
     "MINECRAFT_UV_MAP_STEVE",
+    "MINECRAFT_UV_MAP_CLASSIC",
     "MINECRAFT_UV_MAP_SLIM",
+    "BASE_PARTS",
+    "OUTER_PARTS",
+    "OVERLAY_PARTS",
+    "ALL_PARTS",
+    "BASE_TO_OUTER_MAP",
+    "OUTER_TO_BASE_MAP",
     "get_uv_map",
+    "lookup_uv_coord",
+    "is_slim_model",
+    "is_base_part",
+    "is_outer_part",
+    "normalize_model_name",
+    "detect_skin_model_from_array",
+    "convert_legacy_64x32_to_64x64",
+    "load_skin_array",
+    "rgb_to_hsv",
+    "hsv_to_rgb",
+    "rgb_to_hsl",
+    "hsl_to_rgb",
+    "rgb_to_cielab",
+    "cielab_to_rgb",
+    "extract_opaque_mask",
+    "extract_opaque_rgb",
+    "adjust_rgba_hsv",
+    "adjust_rgba_hsl",
     "Minecraft3DRenderer",
     "render_composite_2d",
     "render_3d_turnaround",
@@ -62,8 +139,10 @@ __all__ = [
     "render_turntable_gif",
     "render_bottom_up",
     "SkinValidator",
+    "auto_fix_skin",
     "compute_aesthetic_score",
     "detect_pillow_shading",
+    "evaluate_golden_rules",
     "TECHWEAR_CYBERPUNK",
     "ANIME_SKIN",
     "CASUAL_STREETWEAR",
@@ -81,9 +160,17 @@ __all__ = [
     "canvas_to_ascii",
     "SkinRAG",
     "get_rag",
+    "set_rag_db_path",
+    "pack_rag_database",
+    "FEATURE_DIM",
+    "extract_visual_features",
+    "pack_feature_blob",
+    "unpack_feature_blob",
+    "compute_visual_similarity",
     "create_base_body",
     "SKIN_TONE_PALETTES",
     "sample_image",
+    "SEAM_PAIRS",
     "check_seams",
     "align_seams",
     "draw_text",
@@ -93,6 +180,4 @@ __all__ = [
     "ANATOMICAL_MODULES",
     "assemble_skin",
     "render_isolated_module",
-    "extract_visual_features",
-    "compute_visual_similarity",
 ]

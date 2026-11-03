@@ -1,54 +1,61 @@
 #!/usr/bin/env python3
 """
-SkinForge CLI Entry Point.
-Command-line interface for rendering, inspecting, and managing Minecraft skins.
+SkinForge CLI Entry Point (v1.3.0).
+Command-line interface for rendering, inspecting, packing RAG databases, and managing Minecraft skins.
 """
 
-import sys
-import os
 import argparse
+import json
+import os
+import sys
+
+__version__ = "1.3.0"
 
 # Add package root to sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from skinforge import (
-    get_rag,
-    assemble_skin,
-    compute_aesthetic_score,
     SkinCanvas,
-    render_composite_2d,
-    render_3d_turnaround,
-    render_turntable_gif,
     SkinValidator,
-    check_seams,
+    __version__ as sf_version,
     align_seams,
-    convert_skin_model
+    assemble_skin,
+    check_seams,
+    compute_aesthetic_score,
+    convert_skin_model,
+    get_rag,
+    pack_rag_database,
+    render_3d_turnaround,
+    render_composite_2d,
+    render_turntable_gif,
 )
 
-def main():
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="skinforge",
-        description="SkinForge: Advanced Minecraft Skin Creation, Quality Audit & 3D Visualization"
+        description=f"SkinForge v{sf_version}: Advanced Minecraft Skin Creation, Quality Audit, RAG Packing & 3D Visualization",
     )
+    parser.add_argument("--version", action="version", version=f"skinforge {sf_version}")
     subparsers = parser.add_subparsers(dest="command")
 
     # Render command
     p_render = subparsers.add_parser("render", help="Render 2D and 3D visual previews")
-    p_render.add_argument("skin", help="Path to input 64x64 skin PNG")
+    p_render.add_argument("skin", help="Path to input 64x64 (or legacy 64x32) skin PNG")
     p_render.add_argument("--out3d", default=None, help="Output path for 3D turnaround image")
     p_render.add_argument("--out2d", default=None, help="Output path for 2D composite image")
-    p_render.add_argument("--layer", choices=["both", "base", "outer"], default="both", help="Filter layers to render (both, base, outer)")
+    p_render.add_argument("--layer", choices=["both", "base", "outer"], default="both", help="Filter layers to render")
 
     # Turnaround GIF command
     p_gif = subparsers.add_parser("gif", help="Generate an animated 360-degree turntable GIF")
     p_gif.add_argument("skin", help="Path to input 64x64 skin PNG")
     p_gif.add_argument("--out", default="previews/turntable_360.gif", help="Output GIF path")
     p_gif.add_argument("--frames", type=int, default=16, help="Number of rotation frames")
-    p_gif.add_argument("--layer", choices=["both", "base", "outer"], default="both", help="Filter layers for GIF (both, base, outer)")
+    p_gif.add_argument("--layer", choices=["both", "base", "outer"], default="both", help="Filter layers for GIF")
 
     # Inspect command
     p_inspect = subparsers.add_parser("inspect", help="Inspect and audit skin layers and geometry")
-    p_inspect.add_argument("skin", help="Path to input 64x64 skin PNG")
+    p_inspect.add_argument("skin", help="Path to input 64x64 (or 64x32) skin PNG")
 
     # Seams command
     p_seams = subparsers.add_parser("seams", help="Audit or align 3D cube edge wrap-around seams")
@@ -59,8 +66,8 @@ def main():
 
     # Convert model command
     p_conv = subparsers.add_parser("convert", help="Convert skin between classic Steve (4px) and Alex slim (3px)")
-    p_conv.add_argument("skin", help="Path to input 64x64 skin PNG")
-    p_conv.add_argument("--to", required=True, choices=["slim", "default"], help="Target model format")
+    p_conv.add_argument("skin", help="Path to input 64x64 (or 64x32) skin PNG")
+    p_conv.add_argument("--to", required=True, choices=["slim", "default", "classic"], help="Target model format")
     p_conv.add_argument("--out", default=None, help="Output path (overwrites input if omitted)")
 
     # Mirror command
@@ -71,35 +78,46 @@ def main():
     p_mirror.add_argument("--out", default=None, help="Output path (overwrites input if omitted)")
 
     # View command
-    p_view = subparsers.add_parser("view", help="Start interactive 3D WebGL skin viewer")
+    subparsers.add_parser("view", help="Start interactive 3D WebGL SkinForge Studio viewer")
 
     # MCP server command
-    p_mcp = subparsers.add_parser("mcp", help="Start SkinForge Model Context Protocol (MCP) server for LLMs")
+    subparsers.add_parser("mcp", help="Start SkinForge Model Context Protocol (MCP) server for LLMs")
 
     # Lego Constructor Assemble command
-    p_assemble = subparsers.add_parser("assemble", help="Lego Constructor: Assemble modular skin components into a unified character")
+    p_assemble = subparsers.add_parser("assemble", help="Lego Constructor: Assemble modular skin components")
     p_assemble.add_argument("--hair", default=None, help="Skin ID or PNG path for hair")
     p_assemble.add_argument("--face", default=None, help="Skin ID or PNG path for face/eyes")
     p_assemble.add_argument("--torso", default=None, help="Skin ID or PNG path for torso/shirt")
     p_assemble.add_argument("--arms", default=None, help="Skin ID or PNG path for arms/sleeves")
     p_assemble.add_argument("--legs", default=None, help="Skin ID or PNG path for legs/pants")
-    p_assemble.add_argument("--outfit", default=None, help="Skin ID or PNG path for full outfit (torso, arms, legs)")
+    p_assemble.add_argument("--outfit", default=None, help="Skin ID or PNG path for full outfit")
     p_assemble.add_argument("--base", default=None, help="Optional base skin ID or PNG to inherit unspecified parts")
-    p_assemble.add_argument("--out", default="assembled_skin.png", help="Output PNG path (default: assembled_skin.png)")
+    p_assemble.add_argument("--out", default="assembled_skin.png", help="Output PNG path")
     p_assemble.add_argument("--preview", action="store_true", help="Also generate 3D turnaround and 2D composite previews")
 
     # Search command
-    p_search = subparsers.add_parser("search", help="Search 900k+ Minecraft skins database")
+    p_search = subparsers.add_parser("search", help="Search Minecraft skins RAG database")
     p_search.add_argument("query", help="Text search query")
     p_search.add_argument("--limit", type=int, default=5, help="Maximum results to return")
     p_search.add_argument("--min-quality", choices=["all", "low", "medium", "high"], default="medium", help="Minimum aesthetic quality tier")
 
     # Part search command
-    p_part_search = subparsers.add_parser("part-search", help="Search for specific anatomical module (hair, face, torso, arms, legs)")
+    p_part_search = subparsers.add_parser("part-search", help="Search for specific anatomical module")
     p_part_search.add_argument("category", choices=["hair", "face", "torso", "arms", "legs", "outfit"], help="Anatomical module category")
     p_part_search.add_argument("query", help="Text search query")
     p_part_search.add_argument("--limit", type=int, default=5, help="Maximum results to return")
     p_part_search.add_argument("--min-quality", choices=["all", "low", "medium", "high"], default="medium", help="Minimum aesthetic quality tier")
+
+    # RAG Pack command (New in v1.3.0)
+    p_pack = subparsers.add_parser(
+        "rag-pack",
+        help="Pack a folder of .png skins or a .zip archive into a portable SQLite FTS5 + CIELAB float16 database (.sfpack / .db)",
+    )
+    p_pack.add_argument("source", help="Path to folder containing .png skins or .zip archive")
+    p_pack.add_argument("--out", default="data/skins_rag.db", help="Output database file path (.sfpack or .db)")
+    p_pack.add_argument("--metadata", default=None, help="Optional path to .json or .csv metadata file")
+    p_pack.add_argument("--min-score", type=float, default=0.0, help="Minimum aesthetic_score threshold (0.0 to 1.0)")
+    p_pack.add_argument("--overwrite", action="store_true", help="Overwrite existing output database file")
 
     args = parser.parse_args()
 
@@ -163,6 +181,18 @@ def main():
         from skinforge.mcp_server import main as run_mcp
         run_mcp()
 
+    elif args.command == "rag-pack":
+        print(f"[*] Packing skins from '{args.source}' into '{args.out}'...")
+        res = pack_rag_database(
+            source_path=args.source,
+            output_path=args.out,
+            metadata_path=args.metadata,
+            min_score=args.min_score,
+            overwrite=args.overwrite,
+        )
+        print(json.dumps(res, indent=2))
+        print(f"[+] Successfully packed {res['packed_count']} skins into '{res['output_path']}' ({res['database_size_mb']} MB)!")
+
     elif args.command == "assemble":
         rag = get_rag()
         components = {}
@@ -181,7 +211,7 @@ def main():
             base_c = SkinCanvas()
             if os.path.exists(args.base):
                 base_c.load_png(args.base)
-            else:
+            elif rag.is_available:
                 s_data = rag.get_skin(args.base, as_canvas=True, as_ascii=False)
                 if s_data and "canvas" in s_data:
                     base_c = s_data["canvas"]
@@ -190,7 +220,7 @@ def main():
             components=components,
             base_canvas=base_c,
             auto_blend_seams=True,
-            auto_fix=True
+            auto_fix=True,
         )
 
         assembled_canvas.export_png(args.out)
@@ -209,8 +239,8 @@ def main():
     elif args.command == "search":
         rag = get_rag()
         if not rag.is_available:
-            print("[!] RAG SQLite database is not available.")
-            sys.exit(1)
+            print(json.dumps(rag.get_unavailable_response(query=args.query), indent=2))
+            return
         results = rag.search(args.query, limit=args.limit, min_quality=args.min_quality, render_previews=False)
         print(f"[*] Found {len(results)} skins matching '{args.query}' (min quality: {args.min_quality}):")
         for i, r in enumerate(results, 1):
@@ -219,8 +249,8 @@ def main():
     elif args.command == "part-search":
         rag = get_rag()
         if not rag.is_available:
-            print("[!] RAG SQLite database is not available.")
-            sys.exit(1)
+            print(json.dumps(rag.get_unavailable_response(query=args.query), indent=2))
+            return
         results = rag.part_search(args.category, args.query, limit=args.limit, min_quality=args.min_quality, render_previews=False)
         print(f"[*] Found {len(results)} {args.category} modules matching '{args.query}':")
         for i, r in enumerate(results, 1):

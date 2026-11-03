@@ -1,32 +1,57 @@
 #!/usr/bin/env python3
 """
-Interactive 3D Minecraft Skin Viewer for SkinForge.
-Features real-time WebGL rendering, walk/run animations, layer toggles, right-click panning, and live auto-reload.
-Run with: python3 viewer.py OR python3 SkinForge/viewer.py
+SkinForge Studio v1.3.0 — Real-Time 3D WebGL Viewer Server.
+
+Features:
+  - Server-Sent Events (SSE) endpoint `/api/events` on ThreadingHTTPServer for instant
+    zero-polling push updates of skin texture, model ('classic'/'slim'), and 6-metric audit telemetry.
+  - Fallback `/api/status` (and `/skin-status`) JSON endpoints.
+  - Serves SkinForge Studio (`static/index.html`, `static/style.css`, `static/app.js`, `static/skinview3d.bundle.js`).
+  - Atomic PNG I/O (`.tmp` + `os.replace`) ensuring zero corrupted texture reads.
 """
 
-import sys
-import os
-import json
-import time
-import socket
+from __future__ import annotations
+
 import base64
+import json
+import os
+import queue
+import socket
+import sys
+import threading
+import time
 import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 try:
     from http.server import ThreadingHTTPServer
 except ImportError:
     ThreadingHTTPServer = HTTPServer
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
-import threading
-from PIL import Image
-import numpy as np
-from skinforge import SkinCanvas, get_rag, compute_aesthetic_score
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, BASE_DIR)
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
-def get_skin_path():
+from skinforge import SkinCanvas, compute_aesthetic_score, get_rag
+from skinforge.audit.validator import auto_fix_skin
+from skinforge.core.canvas import atomic_save_png
+from skinforge.core.session import atomic_write_text
+from skinforge.core.uv import (
+    detect_skin_model_from_array,
+    get_uv_map,
+    is_slim_model,
+    load_skin_array,
+)
+
+
+class DaemonThreadingHTTPServer(ThreadingHTTPServer):
+    """Multi-threaded HTTP server with daemon worker threads for SSE streaming."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def get_skin_path() -> str:
     custom = os.environ.get("SKINFORGE_LIVE_SKIN")
     if custom and os.path.exists(custom):
         return custom
@@ -39,919 +64,279 @@ def get_skin_path():
             return p
     return candidates[0]
 
-def get_skin_model(skin_path):
+
+def get_skin_model(skin_path: str) -> str:
     if not skin_path or not os.path.exists(skin_path):
         return "default"
     model_file = skin_path + ".model"
     if os.path.exists(model_file):
         try:
-            with open(model_file, "r") as f:
+            with open(model_file, "r", encoding="utf-8") as f:
                 val = f.read().strip().lower()
-                if val in ("slim", "default"):
-                    return val
+                if val in ("slim", "alex"):
+                    return "slim"
+                if val in ("default", "classic", "steve"):
+                    return "default"
         except Exception:
             pass
     try:
-        im = Image.open(skin_path).convert("RGBA")
-        arr = np.array(im)
-        if arr.shape[0] >= 64 and arr.shape[1] >= 56:
-            r_unused = np.max(arr[20:32, 54:56, 3])
-            l_unused = np.max(arr[52:64, 46:48, 3])
-            if r_unused == 0 and l_unused == 0:
-                return "slim"
+        arr, _ = load_skin_array(skin_path)
+        return detect_skin_model_from_array(arr)
     except Exception:
-        pass
-    return "default"
+        return "default"
 
-def get_static_bundle():
-    return os.path.join(BASE_DIR, "static", "skinview3d.bundle.js")
 
-HTML_PAGE = """<!DOCTYPE html>
-<html lang="uk">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SkinForge - 3D Minecraft Skin Viewer</title>
-    <script src="/static/skinview3d.bundle.js"></script>
-    <script>
-        // Fallback to CDN if local bundle fails
-        if (typeof skinview3d === 'undefined') {
-            document.write('<script src="https://cdn.jsdelivr.net/npm/skinview3d@3.0.1/bundles/skinview3d.bundle.js"><\\/script>');
-        }
-    </script>
-    <style>
-        :root {
-            --bg: #0e0d14;
-            --panel: rgba(22, 19, 30, 0.9);
-            --border: #2e2640;
-            --neon: #9a32dc;
-            --neon-bright: #be50fa;
-            --text: #e6e2f0;
-            --text-dim: #988fa8;
+def build_viewer_telemetry(skin_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Build a complete, self-contained telemetry payload for SSE `/api/events` and `/api/status`.
+    Includes base64 PNG data, model ('classic'/'slim'), 6-metric Aesthetic Score,
+    unique color count, 4 Golden Rules status, and UV map coordinates.
+    """
+    path = skin_path or get_skin_path()
+    if not path or not os.path.exists(path):
+        return {
+            "status": "empty",
+            "mtime": 0,
+            "size": 0,
+            "model": "classic",
+            "raw_model": "default",
+            "skin_b64": None,
+            "audit": None,
+            "uv_map": {k: list(v) for k, v in get_uv_map("default").items()},
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            user-select: none;
+    try:
+        mtime = os.path.getmtime(path)
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            raw_bytes = f.read()
+        b64_str = base64.b64encode(raw_bytes).decode("utf-8")
+        raw_model = get_skin_model(path)
+        ui_model = "slim" if is_slim_model(raw_model) else "classic"
+
+        arr, _ = load_skin_array(raw_bytes)
+        audit = compute_aesthetic_score(arr, model=raw_model, deduct_defects=True)
+        uv_map = {k: list(v) for k, v in get_uv_map(raw_model).items()}
+
+        return {
+            "status": "ok",
+            "mtime": mtime,
+            "size": size,
+            "model": ui_model,
+            "raw_model": raw_model,
+            "skin_b64": f"data:image/png;base64,{b64_str}",
+            "audit": audit,
+            "uv_map": uv_map,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error": str(exc),
+            "mtime": 0,
+            "size": 0,
+            "model": "classic",
+            "raw_model": "default",
         }
 
-        body {
-            background-color: var(--bg);
-            color: var(--text);
-            overflow: hidden;
-            width: 100vw;
-            height: 100vh;
-            display: flex;
-        }
 
-        #canvas-container {
-            flex: 1;
-            height: 100vh;
-            position: relative;
-            background: radial-gradient(circle at center, #1b1728 0%, #0c0b12 85%);
-            overflow: hidden;
-        }
+class SSEBroadcaster:
+    """Thread-safe Server-Sent Events (SSE) broadcaster watching live skin updates."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._clients: List[queue.Queue] = []
+        self._last_signature: Tuple[float, int, str] = (0.0, 0, "")
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=32)
+        with self._lock:
+            self._clients.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._lock:
+            if q in self._clients:
+                self._clients.remove(q)
+
+    def broadcast(self, payload: Dict[str, Any]) -> None:
+        with self._lock:
+            clients = list(self._clients)
+        for q in clients:
+            try:
+                if q.full():
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        pass
+                q.put_nowait(payload)
+            except Exception:
+                pass
+
+    def start_watcher(self) -> None:
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._thread = threading.Thread(target=self._watch_loop, daemon=True)
+            self._thread.start()
+
+    def _watch_loop(self) -> None:
+        while self._running:
+            try:
+                path = get_skin_path()
+                if path and os.path.exists(path):
+                    mtime = os.path.getmtime(path)
+                    size = os.path.getsize(path)
+                    model = get_skin_model(path)
+                    sig = (mtime, size, model)
+                    if sig != self._last_signature and size > 0:
+                        self._last_signature = sig
+                        telemetry = build_viewer_telemetry(path)
+                        if telemetry.get("status") == "ok":
+                            self.broadcast(telemetry)
+            except Exception:
+                pass
+            time.sleep(0.06)
+
+
+sse_broadcaster = SSEBroadcaster()
+
+
+STATIC_MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".png": "image/png",
+    ".json": "application/json; charset=utf-8",
+}
 
-        canvas#skin_container {
-            width: 100%;
-            height: 100%;
-            display: block;
-            cursor: grab;
-        }
-
-        canvas#skin_container:active {
-            cursor: grabbing;
-        }
-
-        #ui-panel {
-            width: 340px;
-            height: 100%;
-            background: var(--panel);
-            backdrop-filter: blur(16px);
-            border-left: 1px solid var(--border);
-            padding: 24px 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            overflow-y: auto;
-            z-index: 10;
-            box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
-        }
-
-        .header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .header h1 {
-            font-size: 20px;
-            font-weight: 700;
-            color: #fff;
-            letter-spacing: 0.5px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .header h1 span {
-            color: var(--neon-bright);
-            text-shadow: 0 0 12px rgba(190, 80, 250, 0.5);
-        }
-
-        .badge {
-            font-size: 11px;
-            padding: 3px 8px;
-            border-radius: 12px;
-            background: rgba(154, 50, 220, 0.15);
-            color: var(--neon-bright);
-            border: 1px solid rgba(190, 80, 250, 0.3);
-        }
-
-        .section {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .section-title {
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--text-dim);
-        }
-
-        .btn-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-        }
-
-        button {
-            background: #1c1828;
-            color: var(--text);
-            border: 1px solid var(--border);
-            padding: 10px 14px;
-            border-radius: 8px;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-        }
-
-        button:hover {
-            background: #28223a;
-            border-color: var(--neon);
-            color: #fff;
-            transform: translateY(-1px);
-        }
-
-        button:active {
-            transform: translateY(0);
-        }
-
-        button.active {
-            background: linear-gradient(135deg, var(--neon) 0%, #7b1fa2 100%);
-            border-color: var(--neon-bright);
-            color: #fff;
-            box-shadow: 0 0 16px rgba(154, 50, 220, 0.4);
-        }
-
-        .toggle-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 12px;
-            background: rgba(28, 24, 40, 0.6);
-            border-radius: 8px;
-            border: 1px solid rgba(46, 38, 64, 0.6);
-        }
-
-        .toggle-row label {
-            font-size: 13px;
-            cursor: pointer;
-        }
-
-        .toggle-row input[type="checkbox"] {
-            accent-color: var(--neon-bright);
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-        }
-
-        .status-box {
-            background: #13111c;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 12px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            font-size: 12px;
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-weight: 500;
-        }
-
-        .pulse-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #10b981;
-            box-shadow: 0 0 8px #10b981;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { transform: scale(0.95); opacity: 0.8; }
-            50% { transform: scale(1.15); opacity: 1; }
-            100% { transform: scale(0.95); opacity: 0.8; }
-        }
-
-        .status-time {
-            color: var(--text-dim);
-            font-size: 11px;
-        }
-
-        .footer {
-            margin-top: auto;
-            padding-top: 16px;
-            border-top: 1px solid var(--border);
-            font-size: 11px;
-            color: var(--text-dim);
-            text-align: center;
-            line-height: 1.5;
-        }
-
-        /* Tabs Bar & Lego Constructor UI */
-        .tabs-bar {
-            display: flex;
-            background: #14111f;
-            border-radius: 8px;
-            padding: 3px;
-            border: 1px solid var(--border);
-            gap: 4px;
-        }
-
-        .tab-btn {
-            flex: 1;
-            padding: 8px 6px;
-            font-size: 11px;
-            font-weight: 600;
-            border-radius: 6px;
-            border: none;
-            background: transparent;
-            color: var(--text-dim);
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .tab-btn.active {
-            background: var(--neon);
-            color: #fff;
-            box-shadow: 0 0 10px rgba(154, 50, 220, 0.4);
-        }
-
-        .tab-content {
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }
-
-        .mod-box {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            background: #13111c;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px;
-        }
-
-        .mod-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--text);
-        }
-
-        .mod-input-row {
-            display: flex;
-            gap: 6px;
-        }
-
-        .mod-input {
-            flex: 1;
-            background: #1c1828;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: #fff;
-            padding: 6px 8px;
-            font-size: 12px;
-            outline: none;
-        }
-
-        .mod-input:focus {
-            border-color: var(--neon-bright);
-        }
-
-        .mod-btn {
-            padding: 6px 10px;
-            font-size: 11px;
-            background: #252033;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text);
-            cursor: pointer;
-        }
-
-        .mod-btn:hover {
-            border-color: var(--neon);
-            color: #fff;
-        }
-
-        .mod-results {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            max-height: 100px;
-            overflow-y: auto;
-            margin-top: 4px;
-        }
-
-        .mod-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 4px 8px;
-            background: #1a1626;
-            border: 1px solid #2e2640;
-            border-radius: 4px;
-            font-size: 11px;
-            cursor: pointer;
-            transition: all 0.15s;
-        }
-
-        .mod-item:hover {
-            border-color: var(--neon);
-            background: #251d38;
-        }
-
-        .mod-item.selected {
-            border-color: var(--neon-bright);
-            background: rgba(154, 50, 220, 0.3);
-            color: #fff;
-            font-weight: 600;
-        }
-
-        .btn-assemble {
-            background: linear-gradient(135deg, #af36f8 0%, #7b1fa2 100%);
-            color: #fff;
-            padding: 12px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 13px;
-            border: 1px solid #c05cff;
-            box-shadow: 0 0 16px rgba(175, 54, 248, 0.4);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            width: 100%;
-        }
-
-        .btn-assemble:hover {
-            filter: brightness(1.15);
-            transform: translateY(-1px);
-        }
-
-        .score-box {
-            background: #14111f;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            font-size: 11px;
-        }
-
-        .score-badge {
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 10px;
-            text-transform: uppercase;
-            font-weight: 700;
-            background: #10b981;
-            color: #000;
-        }
-    </style>
-</head>
-<body>
-    <div id="canvas-container">
-        <canvas id="skin_container"></canvas>
-    </div>
-
-    <div id="ui-panel">
-        <div class="header">
-            <h1>Skin<span>Forge</span></h1>
-            <div class="badge">3D Viewer</div>
-        </div>
-
-        <!-- Mode Tabs -->
-        <div class="tabs-bar">
-            <button id="tab-btn-controls" class="tab-btn active" onclick="switchTab('controls')">🕹️ 3D Controls</button>
-            <button id="tab-btn-lego" class="tab-btn" onclick="switchTab('lego')">🧩 Lego Constructor</button>
-        </div>
-
-        <!-- Tab 1: 3D Controls -->
-        <div id="tab-controls-content" class="tab-content">
-
-        <!-- Animations -->
-        <div class="section">
-            <div class="section-title">Animations</div>
-            <div class="btn-grid">
-                <button id="btn-walk" onclick="setAnimation('walk')">🚶 Walk</button>
-                <button id="btn-run" onclick="setAnimation('run')">🏃 Run</button>
-                <button id="btn-spin" onclick="toggleSpin()">🔄 Rotate</button>
-                <button id="btn-idle" class="active" onclick="setAnimation('idle')">⏸️ Pause</button>
-            </div>
-        </div>
-
-        <!-- Camera Angles -->
-        <div class="section">
-            <div class="section-title">Camera Angles</div>
-            <div class="btn-grid">
-                <button onclick="setCameraView('front')">Front</button>
-                <button onclick="setCameraView('back')">Back</button>
-                <button onclick="setCameraView('left')">Profile (Left)</button>
-                <button onclick="setCameraView('right')">Profile (Right)</button>
-            </div>
-        </div>
-
-        <!-- Skin Layers -->
-        <div class="section">
-            <div class="section-title">Layer Visibility</div>
-            <div class="toggle-row">
-                <label for="tog-inner">Layer 1 (Base Body)</label>
-                <input type="checkbox" id="tog-inner" checked onchange="updateLayers()">
-            </div>
-            <div class="toggle-row">
-                <label for="tog-outer">Layer 2 (3D Overlay)</label>
-                <input type="checkbox" id="tog-outer" checked onchange="updateLayers()">
-            </div>
-        </div>
-
-        <!-- Texture Sync -->
-        <div class="section">
-            <div class="section-title">Live Texture Sync</div>
-            <button onclick="reloadSkinManual()" style="width: 100%;">🔄 Refresh Skin Now</button>
-            <div class="status-box">
-                <div class="status-indicator">
-                    <div class="pulse-dot" id="live-dot"></div>
-                    <span id="live-text">Live auto-reload active</span>
-                </div>
-                <div class="status-time" id="last-update">Last updated: Just now</div>
-            </div>
-        </div>
-
-        </div><!-- End tab-controls-content -->
-
-        <!-- Tab 2: Lego Constructor -->
-        <div id="tab-lego-content" class="tab-content" style="display: none;">
-            <!-- Hair Module -->
-            <div class="mod-box">
-                <div class="mod-header">
-                    <span>💇 Hair / Hairstyle</span>
-                    <span id="sel-hair" style="color: var(--neon-bright); font-size: 10px;">Default</span>
-                </div>
-                <div class="mod-input-row">
-                    <input type="text" id="input-hair" class="mod-input" placeholder="e.g. purple anime, ponytail" onkeydown="if(event.key==='Enter') searchModule('hair')">
-                    <button class="mod-btn" onclick="searchModule('hair')">Find</button>
-                </div>
-                <div id="results-hair" class="mod-results"></div>
-            </div>
-
-            <!-- Face Module -->
-            <div class="mod-box">
-                <div class="mod-header">
-                    <span>👀 Face / Eyes</span>
-                    <span id="sel-face" style="color: var(--neon-bright); font-size: 10px;">Default</span>
-                </div>
-                <div class="mod-input-row">
-                    <input type="text" id="input-face" class="mod-input" placeholder="e.g. violet eyes, mask" onkeydown="if(event.key==='Enter') searchModule('face')">
-                    <button class="mod-btn" onclick="searchModule('face')">Find</button>
-                </div>
-                <div id="results-face" class="mod-results"></div>
-            </div>
-
-            <!-- Torso Module -->
-            <div class="mod-box">
-                <div class="mod-header">
-                    <span>👔 Torso / Outfit</span>
-                    <span id="sel-torso" style="color: var(--neon-bright); font-size: 10px;">Default</span>
-                </div>
-                <div class="mod-input-row">
-                    <input type="text" id="input-torso" class="mod-input" placeholder="e.g. tuxedo, hoodie, suit" onkeydown="if(event.key==='Enter') searchModule('torso')">
-                    <button class="mod-btn" onclick="searchModule('torso')">Find</button>
-                </div>
-                <div id="results-torso" class="mod-results"></div>
-            </div>
-
-            <!-- Legs Module -->
-            <div class="mod-box">
-                <div class="mod-header">
-                    <span>👖 Legs / Pants</span>
-                    <span id="sel-legs" style="color: var(--neon-bright); font-size: 10px;">Default</span>
-                </div>
-                <div class="mod-input-row">
-                    <input type="text" id="input-legs" class="mod-input" placeholder="e.g. tailored pants, cargo" onkeydown="if(event.key==='Enter') searchModule('legs')">
-                    <button class="mod-btn" onclick="searchModule('legs')">Find</button>
-                </div>
-                <div id="results-legs" class="mod-results"></div>
-            </div>
-
-            <!-- Assemble Button -->
-            <button class="btn-assemble" onclick="assembleCharacter()">
-                ⚡ Assemble & Harmonize
-            </button>
-
-            <!-- Quality Score Display -->
-            <div class="score-box" id="lego-score-box">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 600;">Aesthetic Score</span>
-                    <span class="score-badge" id="lego-score-badge">Top Tier</span>
-                </div>
-                <div style="font-size: 16px; font-weight: 700; color: #fff;" id="lego-score-val">1.0 / 1.0</div>
-                <div style="color: var(--text-dim); font-size: 10px;" id="lego-score-details">3D Relief: 28% | Seams: 0 errors</div>
-            </div>
-        </div><!-- End tab-lego-content -->
-
-        <div class="footer">
-            3D Navigation:<br>
-            • Left Mouse: Rotate camera<br>
-            • Right Mouse: Pan view<br>
-            • Scroll Wheel: Zoom in / out
-        </div>
-    </div>
-
-    <script>
-        let viewer;
-        let isSpinning = false;
-        let lastMtime = 0;
-
-        function initViewer() {
-            const container = document.getElementById("canvas-container");
-            const canvas = document.getElementById("skin_container");
-            const w = container.clientWidth || (window.innerWidth - 340);
-            const h = container.clientHeight || window.innerHeight;
-
-            viewer = new skinview3d.SkinViewer({
-                canvas: canvas,
-                width: w,
-                height: h
-            });
-
-            // Lighting & controls
-            viewer.fov = 60;
-            viewer.zoom = 0.9;
-            viewer.autoRotate = false;
-            viewer.autoRotateSpeed = 1.5;
-
-            // Enable right-click panning and configure OrbitControls
-            if (viewer.controls) {
-                viewer.controls.enablePan = true;
-                viewer.controls.panSpeed = 1.2;
-                viewer.controls.screenSpacePanning = true;
-            }
-
-            // Prevent browser context menu on right-click on the canvas
-            canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-
-            // Handle window resizing
-            window.addEventListener("resize", () => {
-                const nw = container.clientWidth || (window.innerWidth - 340);
-                const nh = container.clientHeight || window.innerHeight;
-                viewer.width = nw;
-                viewer.height = nh;
-            });
-
-            // Set default view: front 3/4
-            setCameraView("front_3d");
-
-            // Load skin via base64 API for 100% reliability without CORS or caching bugs
-            loadSkinFromSource();
-
-            // Start live mtime watcher (300ms for near-instant reactivity)
-            checkSkinUpdate();
-            setInterval(checkSkinUpdate, 300);
-        }
-
-        let currentSkinModel = "default";
-
-        function loadSkinFromSource(modelOverride) {
-            if (modelOverride) {
-                currentSkinModel = modelOverride;
-            }
-            fetch("/skin-base64?t=" + Date.now())
-                .then(r => r.json())
-                .then(data => {
-                    if (data && data.data) {
-                        viewer.loadSkin(data.data, {
-                            model: currentSkinModel,
-                            makeVisible: true
-                        }).then(() => {
-                            updateLayers();
-                            document.getElementById("last-update").innerText = "Last updated: " + new Date().toLocaleTimeString() + " (" + currentSkinModel + ")";
-                            fetch("/api/aesthetic_score?t=" + Date.now())
-                                .then(r => r.json())
-                                .then(res => {
-                                    if (res && res.score !== undefined) {
-                                        const scoreEl = document.getElementById("lego-score-val");
-                                        const badgeEl = document.getElementById("lego-score-badge");
-                                        const detEl = document.getElementById("lego-score-details");
-                                        if (scoreEl) scoreEl.innerText = res.score + " / 1.0";
-                                        if (badgeEl) badgeEl.innerText = res.tier;
-                                        if (detEl && res.metrics) {
-                                            detEl.innerText = "Relief: " + Math.round(res.metrics.relief_3d*100) + "% | HueShift: " + Math.round(res.metrics.hue_shifting*100) + "% | Coherence: " + Math.round(res.metrics.spatial_coherence*100) + "%";
-                                        }
-                                    }
-                                }).catch(() => {});
-                        });
-                    }
-                })
-                .catch(err => {
-                    console.error("Skin loading failed:", err);
-                    // Fallback to direct URL
-                    viewer.loadSkin("/skin.png?t=" + Date.now(), { model: currentSkinModel });
-                });
-        }
-
-        function setAnimation(type) {
-            document.querySelectorAll("#btn-walk, #btn-run, #btn-idle").forEach(b => b.classList.remove("active"));
-            
-            if (viewer.animation) {
-                viewer.animation.paused = true;
-                viewer.animation = null;
-            }
-
-            if (type === 'walk') {
-                document.getElementById("btn-walk").classList.add("active");
-                viewer.animation = new skinview3d.WalkingAnimation();
-                viewer.animation.speed = 0.8;
-            } else if (type === 'run') {
-                document.getElementById("btn-run").classList.add("active");
-                viewer.animation = new skinview3d.RunningAnimation();
-                viewer.animation.speed = 1.0;
-            } else {
-                document.getElementById("btn-idle").classList.add("active");
-            }
-        }
-
-        function toggleSpin() {
-            isSpinning = !isSpinning;
-            viewer.autoRotate = isSpinning;
-            const btn = document.getElementById("btn-spin");
-            isSpinning ? btn.classList.add("active") : btn.classList.remove("active");
-        }
-
-        function setCameraView(view) {
-            // 1. Stop autoRotate if active
-            if (isSpinning) {
-                isSpinning = false;
-                viewer.autoRotate = false;
-                const spinBtn = document.getElementById("btn-spin");
-                if (spinBtn) spinBtn.classList.remove("active");
-            }
-
-            // 2. Reset player wrapper rotation so character is facing default orientation
-            if (viewer.playerWrapper) {
-                viewer.playerWrapper.rotation.set(0, 0, 0);
-            }
-
-            // 3. Reset controls target to center
-            if (viewer.controls) {
-                viewer.controls.target.set(0, 0, 0);
-            }
-
-            // 4. Set camera position
-            if (view === 'front') {
-                viewer.camera.position.set(0, 0, 60);
-            } else if (view === 'front_3d') {
-                viewer.camera.position.set(-25, 12, 50);
-            } else if (view === 'back') {
-                viewer.camera.position.set(0, 0, -60);
-            } else if (view === 'left') {
-                viewer.camera.position.set(60, 0, 0);
-            } else if (view === 'right') {
-                viewer.camera.position.set(-60, 0, 0);
-            }
-
-            viewer.camera.lookAt(0, 0, 0);
-            if (viewer.controls && typeof viewer.controls.update === 'function') {
-                viewer.controls.update();
-            }
-        }
-
-        function updateLayers() {
-            const inner = document.getElementById("tog-inner").checked;
-            const outer = document.getElementById("tog-outer").checked;
-            if (viewer && viewer.playerObject && viewer.playerObject.skin) {
-                const skin = viewer.playerObject.skin;
-                if (typeof skin.setInnerLayerVisible === 'function') {
-                    skin.setInnerLayerVisible(inner);
-                }
-                if (typeof skin.setOuterLayerVisible === 'function') {
-                    skin.setOuterLayerVisible(outer);
-                }
-                skin.traverse(child => {
-                    if (child.name === 'inner') child.visible = inner;
-                    if (child.name === 'outer') child.visible = outer;
-                });
-            }
-        }
-
-        function reloadSkinManual() {
-            loadSkinFromSource();
-        }
-
-        async function checkSkinUpdate() {
-            try {
-                const resp = await fetch("/skin-status");
-                if (resp.ok) {
-                    const data = await resp.json();
-                    const modelChanged = data.model && data.model !== currentSkinModel;
-                    if (modelChanged) {
-                        currentSkinModel = data.model;
-                    }
-                    if (lastMtime === 0 || modelChanged) {
-                        lastMtime = data.mtime;
-                        loadSkinFromSource();
-                    } else if (data.mtime !== lastMtime) {
-                        lastMtime = data.mtime;
-                        loadSkinFromSource();
-                        const dot = document.getElementById("live-dot");
-                        dot.style.background = "#be50fa";
-                        setTimeout(() => dot.style.background = "#10b981", 1000);
-                    }
-                }
-            } catch (e) {
-                // Ignore transient network errors
-            }
-        }
-
-        
-        const activeModules = {};
-
-        function switchTab(tab) {
-            document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-            if (tab === 'controls') {
-                document.getElementById("tab-btn-controls").classList.add("active");
-                document.getElementById("tab-controls-content").style.display = "flex";
-                document.getElementById("tab-lego-content").style.display = "none";
-            } else {
-                document.getElementById("tab-btn-lego").classList.add("active");
-                document.getElementById("tab-controls-content").style.display = "none";
-                document.getElementById("tab-lego-content").style.display = "flex";
-            }
-        }
-
-        async function searchModule(category) {
-            const input = document.getElementById("input-" + category);
-            const q = input.value.trim();
-            if (!q) return;
-
-            const resDiv = document.getElementById("results-" + category);
-            resDiv.innerHTML = "<div style='color: var(--text-dim); padding: 4px;'>Searching 900k skins...</div>";
-
-            try {
-                const resp = await fetch("/api/search_parts?category=" + encodeURIComponent(category) + "&q=" + encodeURIComponent(q));
-                const data = await resp.json();
-                if (data.results && data.results.length > 0) {
-                    resDiv.innerHTML = "";
-                    data.results.forEach((r, idx) => {
-                        const item = document.createElement("div");
-                        item.className = "mod-item" + (activeModules[category] === r.skin_id ? " selected" : "");
-                        item.innerHTML = `<span>#${idx+1} ${r.title || r.caption.substring(0, 24)}...</span><span style='color: #10b981; font-size: 10px;'>★ ${r.quality_score}</span>`;
-                        item.onclick = () => selectModule(category, r.skin_id, r.title || ('#' + (idx+1)));
-                        resDiv.appendChild(item);
-                    });
-                } else {
-                    resDiv.innerHTML = "<div style='color: var(--text-dim); padding: 4px;'>No modules found.</div>";
-                }
-            } catch (err) {
-                resDiv.innerHTML = "<div style='color: #ef4444; padding: 4px;'>Error searching.</div>";
-            }
-        }
-
-        function selectModule(category, skinId, label) {
-            activeModules[category] = skinId;
-            document.getElementById("sel-" + category).innerText = label;
-            const resDiv = document.getElementById("results-" + category);
-            resDiv.querySelectorAll(".mod-item").forEach(el => el.classList.remove("selected"));
-            event.currentTarget.classList.add("selected");
-        }
-
-        async function assembleCharacter() {
-            if (Object.keys(activeModules).length === 0) {
-                alert("Please select at least one module (Hair, Face, Torso, or Legs) to assemble!");
-                return;
-            }
-
-            const btn = document.querySelector(".btn-assemble");
-            const originalText = btn.innerHTML;
-            btn.innerHTML = "⏳ Assembling & Blending...";
-            btn.style.opacity = "0.7";
-
-            try {
-                const resp = await fetch("/api/assemble", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ components: activeModules })
-                });
-                const res = await resp.json();
-                if (res.status === "success") {
-                    document.getElementById("lego-score-val").innerText = res.aesthetic_score + " / 1.0";
-                    document.getElementById("lego-score-badge").innerText = res.aesthetic_tier;
-                    document.getElementById("lego-score-details").innerText = "Applied: " + res.applied_modules.join(", ") + " | Seams healed: " + res.seam_issues;
-                    loadSkinFromSource();
-                } else {
-                    alert("Assembly error: " + (res.error || "Unknown"));
-                }
-            } catch (err) {
-                alert("Error calling assemble API: " + err);
-            } finally {
-                btn.innerHTML = originalText;
-                btn.style.opacity = "1.0";
-            }
-        }
-    
-        window.onload = initViewer;
-    </script>
-</body>
-</html>
-"""
 
 class SkinViewerServer(BaseHTTPRequestHandler):
-    def send_cors_headers(self):
+    protocol_version = "HTTP/1.1"
+
+    def send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
 
-    def do_OPTIONS(self):
+    def _send_json(self, data: Dict[str, Any], status_code: int = 200, head_only: bool = False) -> None:
+        payload = json.dumps(data).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_cors_headers()
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(payload)
+
+    def _serve_static_file(self, file_path: str, head_only: bool = False) -> None:
+        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+            self.send_error(404, "Static file not found")
+            return
+        ext = os.path.splitext(file_path)[1].lower()
+        mime = STATIC_MIME_TYPES.get(ext, "application/octet-stream")
+        with open(file_path, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_cors_headers()
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(data)
+
+    def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_cors_headers()
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def do_HEAD(self):
+    def do_HEAD(self) -> None:
         self.do_GET(head_only=True)
 
-    def do_GET(self, head_only=False):
+    def do_GET(self, head_only: bool = False) -> None:
+        parsed = urlparse(self.path)
+        route = parsed.path
         skin_path = get_skin_path()
-        bundle_path = get_static_bundle()
 
-        if self.path == "/" or self.path.startswith("/?"):
+        if route in ("/", "/index.html"):
+            index_path = os.path.join(BASE_DIR, "static", "index.html")
+            self._serve_static_file(index_path, head_only=head_only)
+
+        elif route.startswith("/static/"):
+            rel_name = os.path.basename(route[len("/static/"):])
+            static_file = os.path.join(BASE_DIR, "static", rel_name)
+            self._serve_static_file(static_file, head_only=head_only)
+
+        elif route == "/api/events":
+            # Server-Sent Events (SSE) stream
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
             self.send_cors_headers()
             self.end_headers()
-            if not head_only:
-                self.wfile.write(HTML_PAGE.encode("utf-8"))
+            if head_only:
+                return
 
-        elif self.path.startswith("/skin-base64"):
+            sse_broadcaster.start_watcher()
+            client_q = sse_broadcaster.subscribe()
+            try:
+                # Immediately push initial state
+                initial = build_viewer_telemetry(skin_path)
+                msg = f"event: skin_update\ndata: {json.dumps(initial)}\n\n"
+                self.wfile.write(msg.encode("utf-8"))
+                self.wfile.flush()
+
+                # Check if client requested single-shot SSE test via ?once=1
+                query_params = parse_qs(parsed.query)
+                if query_params.get("once", ["0"])[0] == "1":
+                    return
+
+                while True:
+                    try:
+                        event_data = client_q.get(timeout=10.0)
+                        chunk = f"event: skin_update\ndata: {json.dumps(event_data)}\n\n"
+                        self.wfile.write(chunk.encode("utf-8"))
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                self.close_connection = True
+                sse_broadcaster.unsubscribe(client_q)
+
+        elif route in ("/api/status", "/skin-status"):
+            telemetry = build_viewer_telemetry(skin_path)
+            self._send_json(telemetry, head_only=head_only)
+
+        elif route in ("/api/aesthetic_score", "/api/audit"):
+            telemetry = build_viewer_telemetry(skin_path)
+            audit = telemetry.get("audit") or {"score": 0.0, "tier": "unknown"}
+            self._send_json(audit, head_only=head_only)
+
+        elif route == "/skin-base64":
             if os.path.exists(skin_path):
                 with open(skin_path, "rb") as f:
                     b64 = base64.b64encode(f.read()).decode("utf-8")
-                payload = json.dumps({"data": f"data:image/png;base64,{b64}"}).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-                self.send_cors_headers()
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                if not head_only:
-                    self.wfile.write(payload)
+                self._send_json(
+                    {
+                        "data": f"data:image/png;base64,{b64}",
+                        "model": get_skin_model(skin_path),
+                    },
+                    head_only=head_only,
+                )
             else:
                 self.send_error(404, "Skin file not found")
 
-        elif self.path.startswith("/skin.png"):
+        elif route == "/skin.png":
             if os.path.exists(skin_path):
                 with open(skin_path, "rb") as f:
                     data = f.read()
@@ -966,85 +351,51 @@ class SkinViewerServer(BaseHTTPRequestHandler):
             else:
                 self.send_error(404, "Skin file not found")
 
-        elif self.path.startswith("/skin-status"):
-            mtime = os.path.getmtime(skin_path) if os.path.exists(skin_path) else 0
-            size = os.path.getsize(skin_path) if os.path.exists(skin_path) else 0
-            model = get_skin_model(skin_path)
-            payload = json.dumps({"mtime": mtime, "size": size, "model": model}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_cors_headers()
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            if not head_only:
-                self.wfile.write(payload)
-
-        elif self.path.startswith("/api/search_parts"):
-            query_params = parse_qs(urlparse(self.path).query)
+        elif route == "/api/search_parts":
+            query_params = parse_qs(parsed.query)
             category = query_params.get("category", ["hair"])[0]
             q = query_params.get("q", [""])[0]
             limit = int(query_params.get("limit", [6])[0])
             rag = get_rag()
             if not rag.is_available:
-                payload = json.dumps({"results": []}).encode("utf-8")
+                self._send_json(rag.get_unavailable_response(query=q), head_only=head_only)
             else:
                 try:
                     results = rag.part_search(category, q, limit=limit, min_quality="low", render_previews=False)
-                    payload = json.dumps({"results": results}).encode("utf-8")
-                except Exception as e:
-                    payload = json.dumps({"error": str(e), "results": []}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_cors_headers()
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            if not head_only:
-                self.wfile.write(payload)
+                    self._send_json({"status": "success", "results": results}, head_only=head_only)
+                except Exception as exc:
+                    self._send_json({"status": "error", "error": str(exc), "results": []}, head_only=head_only)
 
-        elif self.path.startswith("/api/aesthetic_score"):
-            if os.path.exists(skin_path):
-                c = SkinCanvas()
-                c.load_png(skin_path)
-                score_info = compute_aesthetic_score(c, model=get_skin_model(skin_path))
-                payload = json.dumps(score_info).encode("utf-8")
-            else:
-                payload = json.dumps({"score": 0.0, "tier": "unknown"}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_cors_headers()
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            if not head_only:
-                self.wfile.write(payload)
-
-        elif self.path.startswith("/static/skinview3d.bundle.js"):
-            if os.path.exists(bundle_path):
-                with open(bundle_path, "rb") as f:
-                    data = f.read()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/javascript")
-                self.send_header("Cache-Control", "public, max-age=86400")
-                self.send_cors_headers()
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                if not head_only:
-                    self.wfile.write(data)
-            else:
-                self.send_error(404, "Static bundle not found")
         else:
             self.send_error(404, "Not Found")
 
-    def do_POST(self):
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        route = parsed.path
         skin_path = get_skin_path()
-        if self.path == "/api/assemble":
+
+        if route == "/api/auto_fix":
+            try:
+                c = SkinCanvas(model=get_skin_model(skin_path))
+                if os.path.exists(skin_path):
+                    c.load_png(skin_path)
+                fix_res = auto_fix_skin(c, ensure_relief=True)
+                atomic_save_png(c.to_image(), skin_path)
+                atomic_write_text(c.model, skin_path + ".model")
+                telemetry = build_viewer_telemetry(skin_path)
+                sse_broadcaster.broadcast(telemetry)
+                self._send_json({"status": "success", "fix_summary": fix_res, "telemetry": telemetry})
+            except Exception as exc:
+                self._send_json({"status": "error", "error": str(exc)}, status_code=500)
+
+        elif route == "/api/assemble":
             content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length)
+            body = self.rfile.read(content_length) if content_length > 0 else b"{}"
             try:
                 data = json.loads(body.decode("utf-8"))
                 components = data.get("components", {})
                 rag = get_rag()
-                
+
                 base_c = None
                 if os.path.exists(skin_path):
                     base_c = SkinCanvas()
@@ -1054,37 +405,32 @@ class SkinViewerServer(BaseHTTPRequestHandler):
                     components=components,
                     base_canvas=base_c,
                     auto_blend_seams=True,
-                    auto_fix=True
+                    auto_fix=True,
                 )
-                
-                target_canvas.export_png(skin_path)
-                
-                payload = json.dumps({
+
+                atomic_save_png(target_canvas.to_image(), skin_path)
+                atomic_write_text(target_canvas.model, skin_path + ".model")
+                telemetry = build_viewer_telemetry(skin_path)
+                sse_broadcaster.broadcast(telemetry)
+
+                self._send_json({
                     "status": "success",
                     "aesthetic_score": summary.get("aesthetic_score", 0.0),
                     "aesthetic_tier": summary.get("aesthetic_tier", "unknown"),
                     "seam_issues": summary.get("seam_issues_detected", 0),
-                    "applied_modules": summary.get("applied_modules", [])
-                }).encode("utf-8")
-                self.send_response(200)
-            except Exception as e:
-                payload = json.dumps({"status": "error", "error": str(e)}).encode("utf-8")
-                self.send_response(500)
-
-            self.send_header("Content-Type", "application/json")
-            self.send_cors_headers()
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+                    "applied_modules": summary.get("applied_modules", []),
+                    "telemetry": telemetry,
+                })
+            except Exception as exc:
+                self._send_json({"status": "error", "error": str(exc)}, status_code=500)
         else:
             self.send_error(404, "Not Found")
 
-    def log_message(self, format, *args):
-        # Silence routine request logging for clean terminal
+    def log_message(self, format: str, *args: Any) -> None:
         pass
 
 
-def find_free_port(start_port=8080):
+def find_free_port(start_port: int = 8080) -> int:
     for port in range(start_port, start_port + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if s.connect_ex(("127.0.0.1", port)) != 0:
@@ -1092,26 +438,32 @@ def find_free_port(start_port=8080):
     return start_port
 
 
-def main():
-    port = find_free_port(8080)
+def main() -> None:
+    req_port = int(os.environ.get("SKINFORGE_VIEWER_PORT", "8080"))
+    port = find_free_port(req_port)
     server_address = ("127.0.0.1", port)
-    httpd = ThreadingHTTPServer(server_address, SkinViewerServer)
+    httpd = DaemonThreadingHTTPServer(server_address, SkinViewerServer)
+    sse_broadcaster.start_watcher()
+
     url = f"http://localhost:{port}"
     skin_path = get_skin_path()
 
-    print(f"==================================================")
-    print(f"  SkinForge Interactive 3D Web Viewer")
+    print("==================================================")
+    print("  SkinForge Studio v1.3.0 — 3D WebGL Viewer (SSE)")
     print(f"  Server running at: {url}")
-    print(f"  Watching: {skin_path}")
-    print(f"  Controls: Left drag = Rotate | Right drag = Pan | Scroll = Zoom")
-    print(f"  Press Ctrl+C to stop.")
-    print(f"==================================================")
+    print(f"  SSE Stream:        {url}/api/events")
+    print(f"  Watching:          {skin_path}")
+    print("  Press Ctrl+C to stop.")
+    print("==================================================")
 
-    def open_browser():
-        time.sleep(0.5)
-        webbrowser.open(url)
-
-    threading.Thread(target=open_browser, daemon=True).start()
+    if os.environ.get("SKINFORGE_NO_BROWSER") != "1":
+        def open_browser() -> None:
+            time.sleep(0.5)
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        threading.Thread(target=open_browser, daemon=True).start()
 
     try:
         httpd.serve_forever()

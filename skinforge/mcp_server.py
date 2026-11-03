@@ -1,117 +1,502 @@
 """
-SkinForge Model Context Protocol (MCP) Server.
-Empowers LLM agents to author, inspect, edit, audit, and visually verify Minecraft 64x64 skins
-with dual-layer 3D depth, ASCII DSL reverse-engineering, multimodal feedback, and live WebGL viewing.
+SkinForge Model Context Protocol (MCP) Server (v1.3.0).
+
+Empowers LLM agents to author, inspect, edit, audit, pack RAG datasets, and visually verify
+Minecraft 64x64 (and legacy 64x32) skins with dual-layer 3D depth, ASCII DSL reverse-engineering,
+multimodal feedback, 30-state undo/redo history, and live SSE WebGL viewing.
 """
 
-import io
-import os
-import sys
-import json
+from __future__ import annotations
+
 import base64
+import functools
+import inspect
+import io
+import json
+import os
 import subprocess
-from typing import Optional, List, Dict, Any
+import sys
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from PIL import Image
+from pydantic import BaseModel, Field
 
-import mcp.types as types
-from mcp.server.mcpserver import MCPServer
+__version__ = "1.3.0"
 
-from .canvas import SkinCanvas, MINECRAFT_UV_MAP
-from .ascii_codec import normalize_color, rgba_to_hex, part_to_ascii, canvas_to_ascii
-from .templates import create_base_body, SKIN_TONE_PALETTES
-from .validator import SkinValidator, compute_aesthetic_score, detect_pillow_shading
-from .sampler import sample_image
-from .renderer import (
-    render_composite_2d,
-    render_3d_turnaround,
-    render_3d_single,
-    render_part_zoomed,
-    render_bottom_up,
-    render_turntable_gif,
+
+@dataclass
+class _ToolCallResult:
+    """Normalized result wrapper guaranteeing a `.content` attribute across MCPServer, FastMCP, and tests."""
+    content: List[Any]
+    isError: bool = False
+
+
+try:
+    import mcp.types as types
+    if hasattr(types, "ImageContent") and not hasattr(types.ImageContent, "mimeType"):
+        try:
+            types.ImageContent.mimeType = property(lambda self: getattr(self, "mime_type", "image/png"))  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    try:
+        from mcp.server.mcpserver import MCPServer as _BaseMCPServer  # type: ignore[import-not-found]
+    except ImportError:
+        from mcp.server.fastmcp import FastMCP as _BaseMCPServer  # type: ignore[import-not-found]
+
+    class MCPServer(_BaseMCPServer):  # type: ignore[misc]
+        """Unified MCPServer subclass compatible with both MCPServer and FastMCP."""
+
+        async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
+            res = await super().call_tool(name, arguments or {})
+            if hasattr(res, "content"):
+                return res
+            if isinstance(res, tuple) and len(res) >= 1 and isinstance(res[0], (list, tuple)):
+                return _ToolCallResult(content=list(res[0]))
+            if isinstance(res, (list, tuple)):
+                return _ToolCallResult(content=list(res))
+            return _ToolCallResult(content=[res])
+
+except ImportError:
+    # Self-contained MCP JSON-RPC 2.0 implementation for environments without the `mcp` package
+    class _FallbackTypes:
+        @dataclass
+        class TextContent:
+            type: str = "text"
+            text: str = ""
+
+        @dataclass
+        class ImageContent:
+            type: str = "image"
+            data: str = ""
+            mime_type: str = "image/png"
+            mimeType: str = "image/png"
+
+            def __post_init__(self) -> None:
+                if self.mime_type != "image/png" and self.mimeType == "image/png":
+                    self.mimeType = self.mime_type
+                elif self.mimeType != "image/png" and self.mime_type == "image/png":
+                    self.mime_type = self.mimeType
+
+        @dataclass
+        class PromptMessage:
+            role: str
+            content: Any
+
+        ContentBlock = Union[TextContent, ImageContent]
+
+    types = _FallbackTypes()  # type: ignore[assignment]
+
+    @dataclass
+    class _ResourceInfo:
+        uri: str
+        name: str
+        fn: Callable
+
+    @dataclass
+    class _PromptInfo:
+        name: str
+        fn: Callable
+
+    class _ToolManager:
+        def __init__(self) -> None:
+            self._tools: Dict[str, Callable] = {}
+
+    class MCPServer:  # type: ignore[no-redef]
+        """Full JSON-RPC 2.0 stdio MCP server fallback when external `mcp` package is absent."""
+
+        def __init__(self, name: str = "skinforge", instructions: Optional[str] = None) -> None:
+            self.name = name
+            self.instructions = instructions
+            self._tool_manager = _ToolManager()
+            self._resources: Dict[str, _ResourceInfo] = {}
+            self._prompts: Dict[str, _PromptInfo] = {}
+
+        def tool(self, name: Optional[str] = None) -> Callable:
+            def decorator(fn: Callable) -> Callable:
+                t_name = name or fn.__name__
+                self._tool_manager._tools[t_name] = fn
+                return fn
+            return decorator
+
+        def resource(self, uri: str) -> Callable:
+            def decorator(fn: Callable) -> Callable:
+                self._resources[uri] = _ResourceInfo(uri=uri, name=fn.__name__, fn=fn)
+                return fn
+            return decorator
+
+        def prompt(self, name: str) -> Callable:
+            def decorator(fn: Callable) -> Callable:
+                self._prompts[name] = _PromptInfo(name=name, fn=fn)
+                return fn
+            return decorator
+
+        def _invoke_tool_sync(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> _ToolCallResult:
+            if name not in self._tool_manager._tools:
+                raise ValueError(f"Unknown tool: {name}")
+            fn = self._tool_manager._tools[name]
+            res = fn(**(arguments or {}))
+            if isinstance(res, list):
+                content = [
+                    item if hasattr(item, "type") else types.TextContent(type="text", text=str(item))
+                    for item in res
+                ]
+            elif hasattr(res, "type"):
+                content = [res]
+            else:
+                content = [types.TextContent(type="text", text=str(res))]
+            return _ToolCallResult(content=content)
+
+        async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> _ToolCallResult:
+            return self._invoke_tool_sync(name, arguments)
+
+        async def list_resources(self) -> List[_ResourceInfo]:
+            return list(self._resources.values())
+
+        async def list_prompts(self) -> List[_PromptInfo]:
+            return list(self._prompts.values())
+
+        @staticmethod
+        def _build_tool_schema(t_name: str, fn: Callable) -> Dict[str, Any]:
+            sig = inspect.signature(fn)
+            properties: Dict[str, Any] = {}
+            required: List[str] = []
+            for p_name, param in sig.parameters.items():
+                ann = str(param.annotation)
+                if "int" in ann and "List" not in ann and "Dict" not in ann:
+                    p_type = "integer"
+                elif "float" in ann and "List" not in ann:
+                    p_type = "number"
+                elif "bool" in ann:
+                    p_type = "boolean"
+                elif "List" in ann or "list" in ann:
+                    p_type = "array"
+                elif "Dict" in ann or "dict" in ann:
+                    p_type = "object"
+                else:
+                    p_type = "string"
+                prop_schema: Dict[str, Any] = {"type": p_type}
+                if param.default is not inspect.Parameter.empty:
+                    prop_schema["default"] = param.default
+                else:
+                    required.append(p_name)
+                properties[p_name] = prop_schema
+            return {
+                "name": t_name,
+                "description": (fn.__doc__ or "").strip(),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            }
+
+        @staticmethod
+        def _serialize_content_block(block: Any) -> Dict[str, Any]:
+            b_type = getattr(block, "type", "text")
+            if b_type == "image":
+                mime = getattr(block, "mimeType", getattr(block, "mime_type", "image/png"))
+                return {
+                    "type": "image",
+                    "data": getattr(block, "data", ""),
+                    "mimeType": mime,
+                }
+            return {
+                "type": "text",
+                "text": getattr(block, "text", str(block)),
+            }
+
+        def handle_jsonrpc_request(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            """Process a single JSON-RPC 2.0 request/notification dict and return response dict (or None for notifications)."""
+            method = msg.get("method", "")
+            req_id = msg.get("id")
+            params = msg.get("params") or {}
+
+            # Notifications (no id) do not receive a response
+            if req_id is None or method.startswith("notifications/"):
+                return None
+
+            try:
+                if method == "initialize":
+                    result: Dict[str, Any] = {
+                        "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+                        "capabilities": {
+                            "tools": {"listChanged": False},
+                            "resources": {"subscribe": False, "listChanged": False},
+                            "prompts": {"listChanged": False},
+                        },
+                        "serverInfo": {
+                            "name": self.name,
+                            "version": __version__,
+                        },
+                    }
+                    if self.instructions:
+                        result["instructions"] = self.instructions
+                elif method == "ping":
+                    result = {}
+                elif method == "tools/list":
+                    result = {
+                        "tools": [
+                            self._build_tool_schema(t_name, fn)
+                            for t_name, fn in self._tool_manager._tools.items()
+                        ]
+                    }
+                elif method == "tools/call":
+                    t_name = params.get("name", "")
+                    t_args = params.get("arguments") or {}
+                    if t_name not in self._tool_manager._tools:
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32602, "message": f"Unknown tool: {t_name}"},
+                        }
+                    call_res = self._invoke_tool_sync(t_name, t_args)
+                    result = {
+                        "content": [self._serialize_content_block(b) for b in call_res.content],
+                        "isError": bool(call_res.isError),
+                    }
+                elif method == "resources/list":
+                    result = {
+                        "resources": [
+                            {
+                                "uri": r.uri,
+                                "name": r.name,
+                                "description": (r.fn.__doc__ or "").strip(),
+                                "mimeType": "text/plain",
+                            }
+                            for r in self._resources.values()
+                        ]
+                    }
+                elif method == "resources/read":
+                    uri = params.get("uri", "")
+                    if uri not in self._resources:
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32602, "message": f"Unknown resource URI: {uri}"},
+                        }
+                    text_val = self._resources[uri].fn()
+                    result = {
+                        "contents": [
+                            {
+                                "uri": uri,
+                                "mimeType": "text/plain",
+                                "text": str(text_val),
+                            }
+                        ]
+                    }
+                elif method == "prompts/list":
+                    result = {
+                        "prompts": [
+                            {
+                                "name": p.name,
+                                "description": (p.fn.__doc__ or "").strip(),
+                            }
+                            for p in self._prompts.values()
+                        ]
+                    }
+                elif method == "prompts/get":
+                    p_name = params.get("name", "")
+                    if p_name not in self._prompts:
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32602, "message": f"Unknown prompt: {p_name}"},
+                        }
+                    p_obj = self._prompts[p_name]
+                    p_msgs = p_obj.fn(**(params.get("arguments") or {}))
+                    serialized_msgs = []
+                    for m in p_msgs:
+                        serialized_msgs.append({
+                            "role": getattr(m, "role", "user"),
+                            "content": self._serialize_content_block(getattr(m, "content", m)),
+                        })
+                    result = {
+                        "description": (p_obj.fn.__doc__ or "").strip(),
+                        "messages": serialized_msgs,
+                    }
+                else:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32601, "message": f"Method not found: {method}"},
+                    }
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": result,
+                }
+            except Exception as exc:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32603, "message": str(exc)},
+                }
+
+        def run(self, transport: str = "stdio", input_stream: Any = None, output_stream: Any = None) -> None:
+            """Run full JSON-RPC 2.0 stdio event loop reading from stdin and writing to stdout."""
+            in_s = input_stream if input_stream is not None else sys.stdin
+            out_s = output_stream if output_stream is not None else sys.stdout
+
+            for raw_line in in_s:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except Exception as exc:
+                    err_resp = {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": f"Parse error: {exc}"},
+                    }
+                    out_s.write(json.dumps(err_resp) + "\n")
+                    out_s.flush()
+                    continue
+
+                if isinstance(msg, dict):
+                    resp = self.handle_jsonrpc_request(msg)
+                    if resp is not None:
+                        out_s.write(json.dumps(resp) + "\n")
+                        out_s.flush()
+
+from .ascii_codec import canvas_to_ascii, normalize_color, part_to_ascii, rgba_to_hex
+from .audit import (
+    SkinValidator,
+    align_seams,
+    auto_fix_skin,
+    check_seams,
+    compute_aesthetic_score,
+    detect_pillow_shading,
 )
-from .palettes import (
-    TECHWEAR_CYBERPUNK,
+from .color import (
     ANIME_SKIN,
     CASUAL_STREETWEAR,
     FANTASY_KNIGHT,
+    TECHWEAR_CYBERPUNK,
     generate_color_ramp,
 )
+from .converter import convert_skin_model
+from .core import (
+    BASE_PARTS,
+    MINECRAFT_UV_MAP,
+    OUTER_PARTS,
+    SkinCanvas,
+    SkinSession,
+    atomic_save_png,
+)
+from .outfits import apply_outfit
 from .presets import (
     draw_anime_eyes_2x2,
-    draw_hoodie_drawstrings,
     draw_cargo_pocket,
     draw_hair_bangs,
-    draw_sneakers,
     draw_headphones,
+    draw_hoodie_drawstrings,
+    draw_sneakers,
 )
-
-
-from .seams import check_seams, align_seams
-from .typography import draw_text, draw_symbol
-from .outfits import apply_outfit
-from .converter import convert_skin_model
+from .rag import get_rag, pack_rag_database
+from .renderer import (
+    render_3d_single,
+    render_3d_turnaround,
+    render_bottom_up,
+    render_composite_2d,
+    render_part_zoomed,
+    render_turntable_gif,
+)
+from .sampler import sample_image
+from .templates import SKIN_TONE_PALETTES, create_base_body
+from .typography import draw_symbol, draw_text
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-class SkinSession:
-    """Active in-memory skin canvas session and environment state."""
-    def __init__(self):
-        self.canvas = SkinCanvas()
-        default_skin = os.path.join(PROJECT_ROOT, "skins", "skin_syntren.png")
-        custom_skin = os.environ.get("SKINFORGE_DEFAULT_SKIN")
-        if custom_skin and os.path.exists(custom_skin):
-            default_skin = custom_skin
-        self.file_path: Optional[str] = default_skin if os.path.exists(default_skin) else None
-        self.is_dirty: bool = False
-        self.model: str = "default"  # "default" (Steve 4px) or "slim" (Alex 3px)
-        self.viewer_process: Optional[subprocess.Popen] = None
-        self.viewer_port: int = int(os.environ.get("SKINFORGE_VIEWER_PORT", "8080"))
-        self.project_targets: List[str] = [
-            os.path.join(PROJECT_ROOT, "skins", "skin_syntren.png"),
-        ]
-        if custom_skin and custom_skin not in self.project_targets:
-            self.project_targets.append(custom_skin)
-        self.live_file: str = os.path.join(PROJECT_ROOT, ".live_skin.png")
+# ============================================================================
+# PYDANTIC SCHEMAS & UNIFIED ERROR HANDLING DECORATOR
+# ============================================================================
 
-        if self.file_path and os.path.exists(self.file_path):
+class PixelCoordSchema(BaseModel):
+    """Pydantic schema for single pixel coordinate & color edits."""
+    x: int = Field(..., ge=0, lt=64, description="0-indexed X coordinate within the UV part")
+    y: int = Field(..., ge=0, lt=64, description="0-indexed Y coordinate within the UV part")
+    color: Union[str, List[int]] = Field(..., description="Hex color string or RGBA [r, g, b, a] list")
+
+
+class BatchActionSchema(BaseModel):
+    """Pydantic schema for atomic batch action items."""
+    action: str = Field(..., description="Action identifier (e.g. set_pixel, draw_rect, fill_part)")
+    part_name: Optional[str] = None
+    x: Optional[int] = None
+    y: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    color: Optional[Any] = None
+    pixels: Optional[List[Dict[str, Any]]] = None
+    old_color: Optional[Any] = None
+    new_color: Optional[Any] = None
+    tolerance: int = 15
+    layer: str = "both"
+    preset_name: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    src_limb: str = "right_arm"
+    dst_limb: str = "left_arm"
+    mirror_layer2: bool = True
+    amount: int = 6
+    start_color: Optional[Any] = None
+    end_color: Optional[Any] = None
+    direction: str = "vertical"
+
+
+class RagPackConfigSchema(BaseModel):
+    """Pydantic schema for RAG database packing parameters."""
+    source_path: str = Field(..., description="Folder of .png skins or .zip archive")
+    output_path: Optional[str] = Field(None, description="Destination .sfpack or .db path")
+    metadata_path: Optional[str] = Field(None, description="Optional .json or .csv metadata file")
+    min_score: float = Field(0.0, ge=0.0, le=1.0, description="Minimum aesthetic score filter")
+    overwrite: bool = Field(False, description="Overwrite existing database if True")
+
+
+def handle_mcp_errors(json_output: bool = False, multimodal: bool = False) -> Callable:
+    """
+    Unified error-handling decorator for all SkinForge MCP tools.
+    Catches exceptions cleanly and formats error responses consistently.
+    """
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
-                self.canvas.load_png(self.file_path)
-                self.sync_live()
-            except Exception as e:
-                sys.stderr.write(f"[SkinForge] Warning loading default skin: {e}\n")
-                create_base_body(self.canvas, skin_tone="fair")
-        else:
-            create_base_body(self.canvas, skin_tone="fair")
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                if multimodal:
+                    return [types.TextContent(type="text", text=f"Error in {fn.__name__}: {str(exc)}")]
+                if json_output:
+                    return json.dumps({"status": "error", "error": str(exc)}, indent=2)
+                return f"Error: {str(exc)}"
+        return wrapper
+    return decorator
 
-    def sync_live(self):
-        """Immediately sync current in-memory canvas to live staging file for instant 3D Web viewer display."""
+
+def _validate_part_name(part_name: str) -> Optional[str]:
+    if part_name not in MINECRAFT_UV_MAP:
+        return f"Error: Unknown part '{part_name}'. Valid parts: {list(MINECRAFT_UV_MAP.keys())}"
+    return None
+
+
+def _image_to_content(im: Image.Image) -> types.ImageContent:
+    """Convert PIL Image into an MCP ImageContent object for multimodal LLM feedback."""
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+    try:
+        return types.ImageContent(type="image", data=b64_str, mime_type="image/png", mimeType="image/png")
+    except TypeError:
         try:
-            os.makedirs(os.path.dirname(self.live_file), exist_ok=True)
-            self.canvas.export_png(self.live_file)
-            with open(self.live_file + ".model", "w") as f:
-                f.write(self.canvas.model)
-        except Exception as e:
-            sys.stderr.write(f"[SkinForge] Warning syncing live canvas: {e}\n")
-
-    def mark_dirty(self):
-        """Mark session dirty and trigger instant live viewer update."""
-        self.is_dirty = True
-        self.sync_live()
-
-    def reset_blank(self):
-        self.canvas = SkinCanvas()
-        self.file_path = None
-        self.mark_dirty()
-
-    def reset_template(self, skin_tone="fair"):
-        self.canvas = SkinCanvas()
-        create_base_body(self.canvas, skin_tone=skin_tone)
-        self.file_path = None
-        self.mark_dirty()
+            return types.ImageContent(type="image", data=b64_str, mimeType="image/png")
+        except TypeError:
+            return types.ImageContent(type="image", data=b64_str, mime_type="image/png")
 
 
-session = SkinSession()
+# Active thread-safe session singleton
+session = SkinSession(project_root=PROJECT_ROOT)
 
 # Load instructions from instructions.md
 INSTRUCTIONS_PATH = os.path.join(PROJECT_ROOT, "instructions.md")
@@ -132,19 +517,12 @@ server = MCPServer(
 )
 
 
-def _image_to_content(im: Image.Image) -> types.ImageContent:
-    """Helper to convert PIL Image into an MCP ImageContent object for multimodal LLM feedback."""
-    buf = io.BytesIO()
-    im.save(buf, format="PNG")
-    b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return types.ImageContent(type="image", data=b64_str, mime_type="image/png")
-
-
 # ============================================================================
 # 1. SESSION & CANVAS MANAGEMENT TOOLS
 # ============================================================================
 
 @server.tool()
+@handle_mcp_errors()
 def skin_new(
     template: str = "base_body",
     skin_tone: str = "fair",
@@ -154,80 +532,75 @@ def skin_new(
     """
     Initialize a new active in-memory skin canvas.
     Args:
-        template: 'base_body' (recommended: populates a 100% solid Layer 1 humanoid template with 0 holes) or 'blank' (all transparent/empty).
+        template: 'base_body' (populates a 100% solid Layer 1 humanoid template with 0 holes) or 'blank' (all transparent).
         skin_tone: 'fair', 'tan', 'pale', 'dark', or 'anime'.
         hair_color: Hex color string for hair (e.g. '#221c28').
         eye_color: Hex color string for eye iris (e.g. '#9a3cd4').
     """
-    if template == "base_body":
-        session.reset_template(skin_tone=skin_tone)
-        # Apply hair and eye accents
-        session.canvas.draw_rect("head_top", 0, 0, 8, 8, hair_color)
-        session.canvas.draw_rect("head_front", 0, 0, 8, 3, hair_color)
-        draw_anime_eyes_2x2(session.canvas, row=5, iris_color=eye_color)
-        session.file_path = None
-        session.mark_dirty()
-        return f"Initialized new skin canvas using template 'base_body' (skin_tone='{skin_tone}'). 100% solid Layer 1 (0 holes). Live viewer updated."
-    elif template == "blank":
-        session.reset_blank()
-        return "Initialized new empty skin canvas (all parts transparent). Live viewer updated."
-    else:
-        return f"Error: Unknown template '{template}'. Choose 'base_body' or 'blank'."
+    with session.lock:
+        if template == "base_body":
+            session.reset_template(skin_tone=skin_tone)
+            session.canvas.draw_rect("head_top", 0, 0, 8, 8, hair_color)
+            session.canvas.draw_rect("head_front", 0, 0, 8, 3, hair_color)
+            draw_anime_eyes_2x2(session.canvas, row=5, iris_color=eye_color)
+            session.file_path = None
+            session.mark_dirty()
+            return f"Initialized new skin canvas using template 'base_body' (skin_tone='{skin_tone}'). 100% solid Layer 1 (0 holes). Live viewer updated."
+        elif template == "blank":
+            session.reset_blank()
+            return "Initialized new empty skin canvas (all parts transparent). Live viewer updated."
+        else:
+            return f"Error: Unknown template '{template}'. Choose 'base_body' or 'blank'."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_load(file_path: str) -> str:
     """
-    Load a 64x64 Minecraft skin PNG from disk into the active working session.
-    Args:
-        file_path: Absolute or relative path to the skin PNG file.
+    Load a 64x64 (or legacy 64x32, auto-converted to 64x64) Minecraft skin PNG from disk into the active session.
     """
     path = os.path.abspath(os.path.expanduser(file_path))
     if not os.path.exists(path):
         return f"Error: File not found at '{path}'."
 
-    try:
-        session.canvas.load_png(path)
+    with session.lock:
+        was_legacy = session.canvas.load_png(path)
         session.file_path = path
+        session.model = session.canvas.model
         session.is_dirty = False
-        session.canvas.history.clear()
-        session.canvas.future.clear()
+        session.canvas.undo_stack.clear()
+        session.canvas.redo_stack.clear()
         session.sync_live()
-        validator = SkinValidator(path)
+
+        validator = SkinValidator(session.canvas)
         valid, report = validator.validate()
         status = "PASSED quality checks" if valid else "WARNINGS/ERRORS DETECTED"
-        return f"Successfully loaded skin from '{path}'.\nAudit Status: {status}.\nLive 3D viewer updated.\n\nAudit Summary:\n{report}"
-    except Exception as e:
-        return f"Error loading skin from '{path}': {str(e)}"
+        legacy_note = " (Auto-converted from legacy 64x32 -> 64x64)" if was_legacy else ""
+        return (
+            f"Successfully loaded skin from '{path}'{legacy_note}.\n"
+            f"Audit Status: {status}.\nLive 3D viewer updated.\n\nAudit Summary:\n{report}"
+        )
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_save(
     file_path: Optional[str] = None,
     also_export: Optional[List[str]] = None,
     update_previews: bool = True
 ) -> str:
     """
-    Export the current active canvas to a 64x64 RGBA Minecraft skin PNG file.
-    Automatically synchronizes across canonical project targets and regenerates
-    2D composite and 3D turnaround previews in one single call.
-    Also triggers live auto-reload if the 3D Web viewer is running.
-    Args:
-        file_path: Primary destination path.
-        also_export: Optional list of additional paths to sync simultaneously.
-        update_previews: If True (default), automatically renders and saves 'preview_2d.png',
-                         'preview_3d_turnaround.png', and 'preview_bottom_up.png' in the target directory.
+    Atomically export the current active canvas to a 64x64 RGBA Minecraft skin PNG file.
+    Synchronizes across configured targets and optionally regenerates 2D/3D previews.
     """
-    target = file_path or session.file_path or os.path.join(PROJECT_ROOT, "skins", "skin_syntren.png")
-    target = os.path.abspath(os.path.expanduser(target))
-    try:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
+    with session.lock:
+        target = file_path or session.file_path or os.path.join(PROJECT_ROOT, "skins", "skin_syntren.png")
+        target = os.path.abspath(os.path.expanduser(target))
         session.canvas.export_png(target)
         session.file_path = target
         session.is_dirty = False
         session.sync_live()
 
-        # Combine configured project targets and explicit also_export
         targets_to_sync = set()
         if session.project_targets:
             for pt in session.project_targets:
@@ -240,7 +613,6 @@ def skin_save(
         extra_msgs = []
         for ep_abs in sorted(targets_to_sync):
             try:
-                os.makedirs(os.path.dirname(ep_abs), exist_ok=True)
                 session.canvas.export_png(ep_abs)
                 extra_msgs.append(f"Synced to: '{ep_abs}'")
             except Exception as ex:
@@ -270,113 +642,110 @@ def skin_save(
             f"Quality Audit: {'PASS' if valid else 'WARNINGS/ISSUES DETECTED'}.\n\n"
             f"{report}"
         )
-    except Exception as e:
-        return f"Error saving skin to '{target}': {str(e)}"
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_get_session_info() -> str:
-    """
-    Get detailed metrics and status of the current active working skin session.
-    Returns loaded file path, modified status, layer fill percentages, undo history, checkpoints, and viewer status.
-    """
-    base_parts = [k for k in MINECRAFT_UV_MAP.keys() if not any(x in k for x in ['hat', 'jacket', 'sleeve', 'pants'])]
-    outer_parts = [k for k in MINECRAFT_UV_MAP.keys() if any(x in k for x in ['hat', 'jacket', 'sleeve', 'pants'])]
+    """Get detailed metrics and status of the current active working skin session."""
+    with session.lock:
+        base_total = 0
+        base_opaque = 0
+        for p in BASE_PARTS:
+            part = session.canvas.parts[p]
+            base_total += part.shape[0] * part.shape[1]
+            base_opaque += int((part[:, :, 3] == 255).sum())
 
-    base_total = 0
-    base_opaque = 0
-    for p in base_parts:
-        part = session.canvas.parts[p]
-        base_total += part.shape[0] * part.shape[1]
-        base_opaque += int((part[:, :, 3] == 255).sum())
+        outer_total = 0
+        outer_filled = 0
+        for p in OUTER_PARTS:
+            part = session.canvas.parts[p]
+            outer_total += part.shape[0] * part.shape[1]
+            outer_filled += int((part[:, :, 3] > 0).sum())
 
-    outer_total = 0
-    outer_filled = 0
-    for p in outer_parts:
-        part = session.canvas.parts[p]
-        outer_total += part.shape[0] * part.shape[1]
-        outer_filled += int((part[:, :, 3] > 0).sum())
+        base_ratio = (base_opaque / base_total * 100.0) if base_total else 0.0
+        outer_ratio = (outer_filled / outer_total * 100.0) if outer_total else 0.0
 
-    base_ratio = (base_opaque / base_total * 100.0) if base_total else 0.0
-    outer_ratio = (outer_filled / outer_total * 100.0) if outer_total else 0.0
+        v_status = "Running" if session.viewer_process and session.viewer_process.poll() is None else "Stopped"
+        model_desc = "Classic Steve 4px arm" if session.model == "default" else "Slim Alex 3px arm"
+        ckpt_names = ", ".join(session.canvas.checkpoints.keys()) if session.canvas.checkpoints else "none"
+        aesthetic = compute_aesthetic_score(session.canvas)
+        m = aesthetic["metrics"]
 
-    v_status = "Running" if session.viewer_process and session.viewer_process.poll() is None else "Stopped"
-    model_desc = "Classic Steve 4px arm" if session.model == "default" else "Slim Alex 3px arm"
-    ckpt_names = ", ".join(session.canvas.checkpoints.keys()) if session.canvas.checkpoints else "none"
-    aesthetic = compute_aesthetic_score(session.canvas)
-    m = aesthetic["metrics"]
-
-    return (
-        f"=== SkinForge Active Session Info ===\n"
-        f"Loaded File: {session.file_path or '(In-memory canvas)'}\n"
-        f"Unsaved Changes: {'Yes' if session.is_dirty else 'No'}\n"
-        f"Player Model: {session.model} ({model_desc})\n"
-        f"Aesthetic Score: {aesthetic['score']:.2f} / 1.0 [{aesthetic['tier'].upper()}] (Relief: {int(m['relief_3d']*100)}%, Palette: {int(m['palette_harmony']*100)}%, Coherence: {int(m['spatial_coherence']*100)}%, HueShift: {int(m['hue_shifting']*100)}%)\n"
-        f"Undo History: {len(session.canvas.history)} step(s) | Redo: {len(session.canvas.future)} step(s)\n"
-        f"Checkpoints: {len(session.canvas.checkpoints)} ({ckpt_names})\n"
-        f"Layer 1 (Base Body): {base_opaque}/{base_total} opaque pixels ({base_ratio:.1f}% solid)\n"
-        f"Layer 2 (3D Relief): {outer_filled}/{outer_total} active pixels ({outer_ratio:.1f}% relief density)\n"
-        f"3D Web Viewer: {v_status} (Port {session.viewer_port})\n"
-    )
+        return (
+            f"=== SkinForge Active Session Info (v{__version__}) ===\n"
+            f"Loaded File: {session.file_path or '(In-memory canvas)'}\n"
+            f"Unsaved Changes: {'Yes' if session.is_dirty else 'No'}\n"
+            f"Player Model: {session.model} ({model_desc})\n"
+            f"Aesthetic Score: {aesthetic['score']:.2f} / 1.0 [{aesthetic['tier'].upper()}] "
+            f"(Relief: {int(m['relief_3d']*100)}%, Palette: {int(m['palette_harmony']*100)}%, "
+            f"Coherence: {int(m['spatial_coherence']*100)}%, HueShift: {int(m['hue_shifting']*100)}%)\n"
+            f"Undo History: {len(session.undo_stack)} step(s) | Redo: {len(session.redo_stack)} step(s)\n"
+            f"Checkpoints: {len(session.canvas.checkpoints)} ({ckpt_names})\n"
+            f"Layer 1 (Base Body): {base_opaque}/{base_total} opaque pixels ({base_ratio:.1f}% solid)\n"
+            f"Layer 2 (3D Relief): {outer_filled}/{outer_total} active pixels ({outer_ratio:.1f}% relief density)\n"
+            f"3D Web Viewer: {v_status} (Port {session.viewer_port})\n"
+        )
 
 
 # ============================================================================
-# 1B. CANVAS HISTORY & CHECKPOINTS (UNDO / REDO / SNAPSHOTS)
+# 1B. CANVAS HISTORY & CHECKPOINTS (UNDO / REDO / HISTORY / SNAPSHOTS)
 # ============================================================================
 
 @server.tool()
+@handle_mcp_errors()
 def skin_checkpoint(name: str) -> str:
-    """
-    Save a named milestone checkpoint of the active canvas state.
-    Allows LLMs to experiment freely and instantly roll back if needed.
-    Args:
-        name: Name of the checkpoint (e.g. 'before_hair_redesign', 'base_colors_done').
-    """
-    count = session.canvas.create_checkpoint(name)
-    return f"Created checkpoint '{name}'. Total checkpoints saved: {count}."
+    """Save a named milestone checkpoint of the active canvas state."""
+    with session.lock:
+        count = session.canvas.create_checkpoint(name)
+        return f"Created checkpoint '{name}'. Total checkpoints saved: {count}."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_restore_checkpoint(name: str) -> str:
-    """
-    Restore the canvas to a previously saved named checkpoint.
-    Automatically creates an undo state before restoring and updates the live viewer.
-    Args:
-        name: Name of checkpoint to restore.
-    """
-    if name not in session.canvas.checkpoints:
-        available = list(session.canvas.checkpoints.keys())
-        return f"Error: Checkpoint '{name}' not found. Available checkpoints: {available}"
-
-    session.canvas.restore_checkpoint(name)
-    session.mark_dirty()
-    return f"Successfully restored canvas to checkpoint '{name}'. Live viewer updated."
+    """Restore the canvas to a previously saved named checkpoint."""
+    with session.lock:
+        if name not in session.canvas.checkpoints:
+            available = list(session.canvas.checkpoints.keys())
+            return f"Error: Checkpoint '{name}' not found. Available checkpoints: {available}"
+        session.canvas.restore_checkpoint(name)
+        session.mark_dirty()
+        return f"Successfully restored canvas to checkpoint '{name}'. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_undo() -> str:
-    """
-    Undo the last modification made to the active skin canvas.
-    Instantly updates the live 3D viewer.
-    """
-    if session.canvas.undo():
-        session.mark_dirty()
-        remaining = len(session.canvas.history)
+    """Undo the last modification made to the active skin canvas (up to 30 states)."""
+    if session.undo():
+        remaining = len(session.undo_stack)
         return f"Undid last action. Canvas reverted to previous state ({remaining} undo steps remaining in history). Live viewer updated."
     return "Nothing to undo. Undo history is empty."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_redo() -> str:
-    """
-    Reapply the last undone modification to the active skin canvas.
-    Instantly updates the live 3D viewer.
-    """
-    if session.canvas.redo():
-        session.mark_dirty()
-        remaining = len(session.canvas.future)
+    """Reapply the last undone modification from redo_stack."""
+    if session.redo():
+        remaining = len(session.redo_stack)
         return f"Redid previous action ({remaining} redo steps remaining in future history). Live viewer updated."
     return "Nothing to redo. Redo history is empty."
+
+
+@server.tool()
+@handle_mcp_errors(json_output=True)
+def skin_history() -> str:
+    """
+    Inspect the current session's in-memory undo_stack, redo_stack (up to 30 states),
+    and named checkpoints.
+    """
+    hist = session.get_history()
+    return json.dumps({
+        "status": "success",
+        **hist,
+    }, indent=2)
 
 
 # ============================================================================
@@ -384,6 +753,7 @@ def skin_redo() -> str:
 # ============================================================================
 
 @server.tool()
+@handle_mcp_errors(multimodal=True)
 def skin_render_3d(
     preset: str = "turnaround",
     yaw_deg: float = -30.0,
@@ -391,259 +761,220 @@ def skin_render_3d(
     layer_mode: str = "both",
     save_path: Optional[str] = None
 ) -> List[types.ContentBlock]:
-    """
-    Render a 3D Z-buffered rasterized model of the skin and return it directly as an image for visual verification.
-    Args:
-        preset: 'turnaround' (4 angles: Front 3/4, Left profile, Back 3/4, Back straight),
-                'front', 'back', 'left_profile' (Rule 3 check), 'right_profile', 'bottom_up' (Rule 4 chin/hood check), or 'custom'.
-        yaw_deg: Camera horizontal angle if preset is 'custom' (degrees).
-        pitch_deg: Camera vertical angle if preset is 'custom' (degrees).
-        layer_mode: 'both' (default), 'base' (Layer 1 only), or 'outer' (Layer 2 only).
-        save_path: Optional file path to also save the rendered PNG on disk.
-    """
+    """Render a 3D Z-buffered rasterized model of the skin and return it directly as an image."""
     layer_mode = layer_mode.lower()
     if layer_mode not in ("both", "base", "outer"):
         layer_mode = "both"
 
-    if preset == "turnaround":
-        img = render_3d_turnaround(session.canvas, out_path=None, layer_mode=layer_mode)
-        desc = f"3D Turnaround (4 angles) [layers: {layer_mode}]"
-    elif preset == "bottom_up":
-        img = render_bottom_up(session.canvas, out_path=None, layer_mode=layer_mode)
-        desc = f"3D Bottom-Up View (chin, neck, hood underside) [layers: {layer_mode}]"
-    elif preset == "front":
-        img = render_3d_single(session.canvas, yaw_deg=0, pitch_deg=10, layer_mode=layer_mode)
-        desc = f"3D Front View [layers: {layer_mode}]"
-    elif preset == "back":
-        img = render_3d_single(session.canvas, yaw_deg=180, pitch_deg=10, layer_mode=layer_mode)
-        desc = f"3D Back View [layers: {layer_mode}]"
-    elif preset == "left_profile":
-        img = render_3d_single(session.canvas, yaw_deg=75, pitch_deg=8, layer_mode=layer_mode)
-        desc = f"3D Left Profile View (check for floating cardboard) [layers: {layer_mode}]"
-    elif preset == "right_profile":
-        img = render_3d_single(session.canvas, yaw_deg=-75, pitch_deg=8, layer_mode=layer_mode)
-        desc = f"3D Right Profile View [layers: {layer_mode}]"
-    else:
-        img = render_3d_single(session.canvas, yaw_deg=yaw_deg, pitch_deg=pitch_deg, layer_mode=layer_mode)
-        desc = f"3D Custom Angle (yaw={yaw_deg}°, pitch={pitch_deg}°) [layers: {layer_mode}]"
+    with session.lock:
+        if preset == "turnaround":
+            img = render_3d_turnaround(session.canvas, out_path=None, layer_mode=layer_mode)
+            desc = f"3D Turnaround (4 angles) [layers: {layer_mode}]"
+        elif preset == "bottom_up":
+            img = render_bottom_up(session.canvas, out_path=None, layer_mode=layer_mode)
+            desc = f"3D Bottom-Up View (chin, neck, hood underside) [layers: {layer_mode}]"
+        elif preset == "front":
+            img = render_3d_single(session.canvas, yaw_deg=0, pitch_deg=10, layer_mode=layer_mode)
+            desc = f"3D Front View [layers: {layer_mode}]"
+        elif preset == "back":
+            img = render_3d_single(session.canvas, yaw_deg=180, pitch_deg=10, layer_mode=layer_mode)
+            desc = f"3D Back View [layers: {layer_mode}]"
+        elif preset == "left_profile":
+            img = render_3d_single(session.canvas, yaw_deg=75, pitch_deg=8, layer_mode=layer_mode)
+            desc = f"3D Left Profile View (check for floating cardboard) [layers: {layer_mode}]"
+        elif preset == "right_profile":
+            img = render_3d_single(session.canvas, yaw_deg=-75, pitch_deg=8, layer_mode=layer_mode)
+            desc = f"3D Right Profile View [layers: {layer_mode}]"
+        else:
+            img = render_3d_single(session.canvas, yaw_deg=yaw_deg, pitch_deg=pitch_deg, layer_mode=layer_mode)
+            desc = f"3D Custom Angle (yaw={yaw_deg}°, pitch={pitch_deg}°) [layers: {layer_mode}]"
 
     saved_msg = ""
     if save_path:
-        out = os.path.abspath(os.path.expanduser(save_path))
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        img.save(out)
+        out = atomic_save_png(img, save_path)
         saved_msg = f"\nSaved image to: '{out}'"
 
     return [
         types.TextContent(type="text", text=f"Rendered {desc}.{saved_msg}\nInspect the visual output below:"),
-        _image_to_content(img)
+        _image_to_content(img),
     ]
 
 
 @server.tool()
+@handle_mcp_errors(multimodal=True)
 def skin_render_2d(
     layer_mode: str = "both",
     scale: int = 16,
     save_path: Optional[str] = None
 ) -> List[types.ContentBlock]:
-    """
-    Render front and back 2D composite view with Layer 2 overlaid and return as an image.
-    Args:
-        layer_mode: 'both' (composite) or 'flat_uv'.
-        scale: Upscaling factor (default 16, produces a crisp 576x576 image).
-        save_path: Optional path to save the 2D composite on disk.
-    """
-    img = render_composite_2d(session.canvas, out_path=None, scale=scale)
+    """Render front and back 2D composite view with Layer 2 overlaid and return as an image."""
+    with session.lock:
+        img = render_composite_2d(session.canvas, out_path=None, scale=scale)
     saved_msg = ""
     if save_path:
-        out = os.path.abspath(os.path.expanduser(save_path))
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        img.save(out)
+        out = atomic_save_png(img, save_path)
         saved_msg = f"\nSaved composite to: '{out}'"
 
     return [
         types.TextContent(type="text", text=f"Rendered 2D Composite (Front and Back with Layer 2 overlay).{saved_msg}"),
-        _image_to_content(img)
+        _image_to_content(img),
     ]
 
 
 @server.tool()
+@handle_mcp_errors(multimodal=True)
 def skin_render_part(
     part_name: str,
     scale: int = 16,
     show_grid: bool = True,
     save_path: Optional[str] = None
 ) -> List[types.ContentBlock]:
-    """
-    Render an individual UV part face enlarged (e.g. 16x) with a pixel grid for micro-inspection.
-    Args:
-        part_name: Exact part face name (e.g. 'head_front', 'hat_front', 'jacket_back', 'body_front').
-        scale: Zoom level per pixel (default 16).
-        show_grid: Whether to draw subtle grid lines separating individual pixels.
-        save_path: Optional path to save image.
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return [types.TextContent(type="text", text=f"Error: Unknown part '{part_name}'. Valid parts: {list(MINECRAFT_UV_MAP.keys())}")]
+    """Render an individual UV part face enlarged with a pixel grid for micro-inspection."""
+    err = _validate_part_name(part_name)
+    if err:
+        return [types.TextContent(type="text", text=err)]
 
-    img = render_part_zoomed(session.canvas, part_name, scale=scale, show_grid=show_grid, out_path=None)
+    with session.lock:
+        img = render_part_zoomed(session.canvas, part_name, scale=scale, show_grid=show_grid, out_path=None)
+        h, w, _ = session.canvas.parts[part_name].shape
+
     saved_msg = ""
     if save_path:
-        out = os.path.abspath(os.path.expanduser(save_path))
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        img.save(out)
+        out = atomic_save_png(img, save_path)
         saved_msg = f"\nSaved to: '{out}'"
 
-    h, w, _ = session.canvas.parts[part_name].shape
     return [
         types.TextContent(type="text", text=f"Zoomed view of part '{part_name}' ({w}x{h} px, scale={scale}x).{saved_msg}"),
-        _image_to_content(img)
+        _image_to_content(img),
     ]
 
 
 @server.tool()
+@handle_mcp_errors(multimodal=True)
 def skin_render_turntable_gif(
     frames: int = 16,
     fps: int = 12,
     layer_mode: str = "both",
     out_path: Optional[str] = None
 ) -> List[Any]:
-    """
-    Generate an animated 360-degree turntable rotation GIF of the player model.
-    Args:
-        frames: Number of rotation frames (default 16).
-        fps: Animation frames per second (default 12).
-        layer_mode: 'both', 'base', or 'outer'.
-        out_path: Output path for GIF (defaults to project output directory or 'previews/turntable_360.gif').
-    """
+    """Generate an animated 360-degree turntable rotation GIF of the player model."""
     if not out_path and session.file_path:
         out = os.path.join(os.path.dirname(session.file_path), "turntable_360.gif")
     else:
         out = out_path or os.path.join(PROJECT_ROOT, "previews", "turntable_360.gif")
     out = os.path.abspath(os.path.expanduser(out))
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    try:
+
+    with session.lock:
         render_turntable_gif(session.canvas, out, frames=frames, fps=fps, layer_mode=layer_mode)
-        with open(out, "rb") as f:
-            b64_str = base64.b64encode(f.read()).decode("utf-8")
-        return [
-            types.TextContent(type="text", text=f"Successfully generated {frames}-frame turntable GIF at: '{out}' ({os.path.getsize(out)} bytes)."),
-            types.ImageContent(type="image", data=b64_str, mime_type="image/gif")
-        ]
-    except Exception as e:
-        return [types.TextContent(type="text", text=f"Error generating turntable GIF: {str(e)}")]
+    with open(out, "rb") as f:
+        b64_str = base64.b64encode(f.read()).decode("utf-8")
+    try:
+        gif_content = types.ImageContent(type="image", data=b64_str, mime_type="image/gif", mimeType="image/gif")
+    except TypeError:
+        try:
+            gif_content = types.ImageContent(type="image", data=b64_str, mimeType="image/gif")
+        except TypeError:
+            gif_content = types.ImageContent(type="image", data=b64_str, mime_type="image/gif")
+    return [
+        types.TextContent(type="text", text=f"Successfully generated {frames}-frame turntable GIF at: '{out}' ({os.path.getsize(out)} bytes)."),
+        gif_content,
+    ]
 
 
 # ============================================================================
-# 3. DRAWING & PART MANIPULATION TOOLS (LLM ERGONOMIC)
+# 3. RAG SEARCH, VISUAL SEARCH, MODULAR LEGO ASSEMBLY & PACKING
 # ============================================================================
 
 @server.tool()
-def skin_get_part_ascii(part_name: str, tolerance: int = 6) -> str:
+@handle_mcp_errors(json_output=True)
+def skin_rag_pack(
+    source_path: str,
+    output_path: Optional[str] = None,
+    metadata_path: Optional[str] = None,
+    min_score: float = 0.0,
+    overwrite: bool = False
+) -> str:
     """
-    Reverse-engineer an existing part's pixels into a clean ASCII grid string and palette dictionary.
-    Allows LLMs to inspect what is currently drawn on any face and perform incremental edits.
-    Args:
-        part_name: Name of face (e.g. 'head_front', 'hat_front', 'jacket_back', 'body_front').
-        tolerance: Color grouping threshold (default 6).
+    Pack a folder of .png skins or a .zip archive (with optional .json/.csv metadata) into a
+    single compact, portable SQLite FTS5 + 299-dim CIELAB float16 database (.sfpack / .db).
     """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'. Valid parts: {list(MINECRAFT_UV_MAP.keys())}"
-
-    part_arr = session.canvas.parts[part_name]
-    h, w, _ = part_arr.shape
-    grid, palette = part_to_ascii(part_arr, tolerance=tolerance)
-
-    pal_lines = []
-    for ch, rgba in sorted(palette.items()):
-        hex_c = rgba_to_hex(rgba)
-        pal_lines.append(f"  '{ch}': {rgba}  # {hex_c}")
-
-    pal_str = "\n".join(pal_lines)
-    return (
-        f"=== Part: {part_name} ({w}x{h} px) ===\n"
-        f"Palette:\n"
-        f"{pal_str}\n\n"
-        f"ASCII Grid:\n"
-        f"{grid}\n\n"
-        f"To edit this part: Modify the characters in the grid above and call 'skin_set_part_ascii'."
+    cfg = RagPackConfigSchema(
+        source_path=source_path,
+        output_path=output_path,
+        metadata_path=metadata_path,
+        min_score=min_score,
+        overwrite=overwrite,
     )
-
-
+    res = pack_rag_database(
+        source_path=cfg.source_path,
+        output_path=cfg.output_path,
+        metadata_path=cfg.metadata_path,
+        min_score=cfg.min_score,
+        overwrite=cfg.overwrite,
+    )
+    return json.dumps(res, indent=2)
 
 
 @server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_search(
     query: str,
     limit: int = 5,
     min_quality: str = "medium",
     render_previews: bool = True
 ) -> str:
-    """
-    Search across 900,000+ captioned Minecraft skins using BM25 relevance ranking.
-    Returns matching skin IDs, descriptive captions, palette colors, and on-the-fly 3D turnaround previews.
-
-    Args:
-        query: Search keywords or visual description (e.g. 'cyberpunk samurai', 'purple scarf ninja', 'medieval knight', 'goth girl').
-        limit: Number of candidate skins to return (default: 5, max: 20).
-        render_previews: Whether to render 3D turnaround previews for visual inspection (default: True).
-    """
-    from .rag import get_rag
+    """Search across indexed Minecraft skins using SQLite FTS5 BM25 relevance ranking."""
     rag = get_rag()
-    if rag.count() == 0:
-        return json.dumps({
-            "status": "db_not_initialized",
-            "message": "The RAG database is empty or not yet indexed. Run 'python scripts/ingest_full_dataset.py' or use built-in procedural templates and outfits.",
-            "results": []
-        }, indent=2)
+    if not rag.is_available:
+        return json.dumps(rag.get_unavailable_response(query=query), indent=2)
 
     results = rag.search(query=query, limit=min(limit, 20), min_quality=min_quality, render_previews=render_previews)
     if not results:
         return json.dumps({
             "status": "empty",
             "message": f"No skins found matching query: '{query}'. Total skins in DB: {rag.count()}",
-            "results": []
+            "results": [],
         }, indent=2)
 
     return json.dumps({
         "status": "success",
         "query": query,
         "total_results": len(results),
-        "results": results
+        "results": results,
     }, indent=2)
 
 
 @server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_get_reference(
     skin_id: str,
     load_to_canvas: bool = False,
     as_ascii: bool = True
 ) -> str:
-    """
-    Retrieve full details for a reference skin by ID from the 900k dataset.
-    Can load the skin directly into the active editing session and/or return its ASCII parts and palette.
-
-    Args:
-        skin_id: Unique identifier of the skin (from skin_search).
-        load_to_canvas: If True, replaces the current active session skin with this reference skin (default: False).
-        as_ascii: If True, returns full 2D ASCII grids for all parts and the color palette (default: True).
-    """
-    from .rag import get_rag
+    """Retrieve full details for a reference skin by ID from the RAG dataset."""
     rag = get_rag()
+    if not rag.is_available:
+        return json.dumps(rag.get_unavailable_response(query=skin_id), indent=2)
+
     skin_data = rag.get_skin(skin_id, as_canvas=load_to_canvas, as_ascii=as_ascii)
     if not skin_data:
-        return json.dumps({"error": f"Skin '{skin_id}' not found in RAG database."})
+        return json.dumps({"status": "not_found", "error": f"Skin '{skin_id}' not found in RAG database."})
 
     if load_to_canvas and "canvas" in skin_data:
-        session.canvas = skin_data["canvas"]
-        session.model = skin_data.get("model_type", "default")
-        session.mark_dirty()
+        with session.lock:
+            session.push_undo(action=f"load_reference:{skin_id}")
+            session.canvas = skin_data["canvas"]
+            session.model = skin_data.get("model_type", "default")
+            session.mark_dirty()
 
-    resp = {
+    resp: Dict[str, Any] = {
+        "status": "success",
         "skin_id": skin_data["skin_id"],
         "title": skin_data.get("title"),
         "caption": skin_data.get("caption"),
         "model_type": skin_data.get("model_type", "default"),
-        "loaded_to_active_canvas": load_to_canvas
+        "loaded_to_active_canvas": load_to_canvas,
     }
     if as_ascii:
         resp["palette"] = skin_data.get("palette")
@@ -653,6 +984,7 @@ def skin_get_reference(
 
 
 @server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_remix(
     base_skin_id: str,
     overlay_skin_id: str,
@@ -660,56 +992,53 @@ def skin_remix(
     auto_fix: bool = True,
     save_path: Optional[str] = None
 ) -> str:
-    """
-    Remix two reference skins from the 900k dataset:
-    Takes the base body/armor from base_skin and overlays accessories/parts from overlay_skin.
-    Loads the remixed result into the active session canvas.
-
-    Args:
-        base_skin_id: ID of the base skin (provides primary body and clothing).
-        overlay_skin_id: ID of the overlay skin (provides accessories, hats, jackets, or scarves).
-        parts_to_take: Specific UV parts to transfer (default: all Layer 2 outer parts like hat, jacket, sleeves, pants).
-        auto_fix: Automatically heal Layer 1 holes and sanitize Layer 2 (default: True).
-        save_path: Optional path to save the resulting skin PNG.
-    """
-    from .rag import get_rag
+    """Remix two reference skins from the RAG dataset or file paths."""
     rag = get_rag()
-    try:
-        remixed_canvas, info = rag.remix_skins(
-            base_skin_id=base_skin_id,
-            overlay_skin_id=overlay_skin_id,
-            parts_to_take=parts_to_take,
-            auto_fix=auto_fix,
-            save_path=save_path
-        )
+    if not rag.is_available and not (os.path.exists(base_skin_id) and os.path.exists(overlay_skin_id)):
+        return json.dumps(rag.get_unavailable_response(), indent=2)
+
+    remixed_canvas, info = rag.remix_skins(
+        base_skin_id=base_skin_id,
+        overlay_skin_id=overlay_skin_id,
+        parts_to_take=parts_to_take,
+        auto_fix=auto_fix,
+        save_path=save_path,
+    )
+    with session.lock:
+        session.push_undo(action=f"remix:{base_skin_id}+{overlay_skin_id}")
         session.canvas = remixed_canvas
         session.mark_dirty()
-        return json.dumps({
-            "status": "success",
-            "message": f"Successfully remixed '{base_skin_id}' with '{overlay_skin_id}'.",
-            "preview_3d_path": info.get("preview_3d"),
-            "saved_to": save_path
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
 
-
-@server.tool()
-def skin_rag_status() -> str:
-    """
-    Get the status of the SkinForge RAG database (number of indexed skins, database path).
-    """
-    import os
-    from .rag import get_rag
-    rag = get_rag()
     return json.dumps({
-        "status": "ready" if rag.count() > 0 else "empty",
-        "total_indexed_skins": rag.count(),
-        "database_path": str(rag.db_path),
-        "database_size_mb": round(os.path.getsize(rag.db_path) / (1024 * 1024), 2) if os.path.exists(rag.db_path) else 0
+        "status": "success",
+        "message": f"Successfully remixed '{base_skin_id}' with '{overlay_skin_id}'.",
+        "preview_3d_path": info.get("preview_3d"),
+        "saved_to": save_path,
     }, indent=2)
 
+
 @server.tool()
+@handle_mcp_errors(json_output=True)
+def skin_rag_status() -> str:
+    """Get the status of the SkinForge RAG database (number of indexed skins, database path)."""
+    rag = get_rag()
+    count = rag.count()
+    if count == 0:
+        info = rag.get_unavailable_response()
+        info["database_size_mb"] = round(os.path.getsize(rag.db_path) / (1024 * 1024), 2) if os.path.exists(rag.db_path) else 0
+        return json.dumps(info, indent=2)
+
+    return json.dumps({
+        "status": "ready",
+        "available": True,
+        "total_indexed_skins": count,
+        "database_path": str(rag.db_path),
+        "database_size_mb": round(os.path.getsize(rag.db_path) / (1024 * 1024), 2) if os.path.exists(rag.db_path) else 0,
+    }, indent=2)
+
+
+@server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_part_search(
     category: str,
     query: str,
@@ -717,209 +1046,179 @@ def skin_part_search(
     min_quality: str = "medium",
     render_previews: bool = True
 ) -> str:
-    """
-    Search for specific anatomical components (hair, face, torso, arms, legs, outfit)
-    and render isolated 3D component previews on a neutral mannequin for modular Lego assembly.
-
-    Args:
-        category: Anatomical module ('hair', 'face', 'torso', 'arms', 'legs', 'head', 'outfit').
-        query: Descriptive keywords (e.g. 'anime messy bangs', 'business suit tie', 'sneakers').
-        limit: Max candidates to return (default: 5).
-        min_quality: 'all', 'low', 'medium', or 'high'.
-        render_previews: Whether to render isolated 3D previews on mannequin (default: True).
-    """
-    from .rag import get_rag
+    """Search for specific anatomical components (hair, face, torso, arms, legs, outfit)."""
     rag = get_rag()
-    if rag.count() == 0:
-        return json.dumps({
-            "status": "db_not_initialized",
-            "message": "The RAG database is empty or not yet indexed. Run 'python scripts/ingest_full_dataset.py' to populate it.",
-            "results": []
-        }, indent=2)
-    try:
-        results = rag.part_search(
-            category=category,
-            query=query,
-            limit=limit,
-            min_quality=min_quality,
-            render_previews=render_previews
-        )
-        return json.dumps({
-            "status": "success",
-            "category": category,
-            "query": query,
-            "total_results": len(results),
-            "results": results
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    if not rag.is_available:
+        return json.dumps(rag.get_unavailable_response(query=query), indent=2)
+
+    results = rag.part_search(
+        category=category,
+        query=query,
+        limit=limit,
+        min_quality=min_quality,
+        render_previews=render_previews,
+    )
+    return json.dumps({
+        "status": "success",
+        "category": category,
+        "query": query,
+        "total_results": len(results),
+        "results": results,
+    }, indent=2)
 
 
 @server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_assemble(
     components: Dict[str, str],
     auto_blend_seams: bool = True,
     auto_fix: bool = True
 ) -> str:
-    """
-    Lego Constructor: Assemble a complete Minecraft skin from modular component sources.
-    Loads the assembled skin directly into the active editing session with boundary seam blending.
-
-    Args:
-        components: Dict mapping module names ('hair', 'face', 'torso', 'arms', 'legs', 'outfit')
-                    to either a RAG skin_id (e.g. 'skin21181765flamez-suit') or 'active' (to keep current part).
-        auto_blend_seams: Automatically blend texture seams across anatomical joints (default: True).
-        auto_fix: Automatically heal Layer 1 holes and sanitize Layer 2 depth (default: True).
-    """
-    from .rag import get_rag
+    """Lego Constructor: Assemble a complete Minecraft skin from modular component sources."""
     rag = get_rag()
-    try:
-        resolved_components = {}
-        for mod, src in components.items():
-            if src == "active":
-                resolved_components[mod] = session.canvas
-            else:
-                resolved_components[mod] = src
+    resolved_components: Dict[str, Union[str, SkinCanvas]] = {}
+    for mod, src in components.items():
+        if src == "active":
+            resolved_components[mod] = session.canvas
+        else:
+            if not os.path.exists(src) and not rag.is_available:
+                return json.dumps(rag.get_unavailable_response(query=src), indent=2)
+            resolved_components[mod] = src
 
-        assembled_canvas, summary = rag.assemble_modules(
-            components=resolved_components,
-            base_canvas=session.canvas,
-            auto_blend_seams=auto_blend_seams,
-            auto_fix=auto_fix
-        )
+    assembled_canvas, summary = rag.assemble_modules(
+        components=resolved_components,
+        base_canvas=session.canvas,
+        auto_blend_seams=auto_blend_seams,
+        auto_fix=auto_fix,
+    )
+    with session.lock:
+        session.push_undo(action="assemble_skin")
         session.canvas = assembled_canvas
         session.mark_dirty()
 
-        return json.dumps({
-            "status": "success",
-            "message": f"Successfully assembled skin from {list(components.keys())}.",
-            "summary": summary,
-            "preview_3d_path": summary.get("preview_3d_path")
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    return json.dumps({
+        "status": "success",
+        "message": f"Successfully assembled skin from {list(components.keys())}.",
+        "summary": summary,
+        "preview_3d_path": summary.get("preview_3d_path"),
+    }, indent=2)
 
 
 @server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_search_by_image(
     image_path: str,
     limit: int = 5,
     min_quality: str = "medium",
     render_previews: bool = True
 ) -> str:
-    """
-    Visual Reference Search: Find Minecraft skins that visually match a concept art image,
-    reference photo, or character drawing using spatial-color pyramid feature matching (LAB color space).
-
-    Args:
-        image_path: Absolute or relative path to reference image on disk.
-        limit: Number of visually similar candidate skins to return (default: 5).
-        min_quality: 'all', 'low', 'medium', or 'high'.
-        render_previews: Whether to render 3D turnaround previews (default: True).
-    """
-    import os
+    """Visual Reference Search: Find skins matching a concept image using 299-dim CIELAB pyramids."""
     if not os.path.exists(image_path):
-        return json.dumps({"error": f"Reference image not found: {image_path}"})
+        return json.dumps({"status": "error", "error": f"Reference image not found: {image_path}"})
 
-    from .rag import get_rag
     rag = get_rag()
-    try:
-        results = rag.search_by_image(
-            image_input=image_path,
-            limit=limit,
-            min_quality=min_quality,
-            render_previews=render_previews
-        )
-        return json.dumps({
-            "status": "success",
-            "query_image": image_path,
-            "total_results": len(results),
-            "results": results
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    if not rag.is_available:
+        return json.dumps(rag.get_unavailable_response(query=image_path), indent=2)
+
+    results = rag.search_by_image(
+        image_input=image_path,
+        limit=limit,
+        min_quality=min_quality,
+        render_previews=render_previews,
+    )
+    return json.dumps({
+        "status": "success",
+        "query_image": image_path,
+        "total_results": len(results),
+        "results": results,
+    }, indent=2)
 
 
+# ============================================================================
+# 4. DRAWING & PART MANIPULATION TOOLS (LLM ERGONOMIC)
+# ============================================================================
+
+@server.tool()
+@handle_mcp_errors()
+def skin_get_part_ascii(part_name: str, tolerance: int = 6) -> str:
+    """Reverse-engineer an existing part's pixels into a clean ASCII grid string and palette dictionary."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+
+    with session.lock:
+        part_arr = session.canvas.parts[part_name]
+        h, w, _ = part_arr.shape
+        grid, palette = part_to_ascii(part_arr, tolerance=tolerance)
+
+    pal_lines = [f"  '{ch}': {rgba}  # {rgba_to_hex(rgba)}" for ch, rgba in sorted(palette.items())]
+    pal_str = "\n".join(pal_lines)
+    return (
+        f"=== Part: {part_name} ({w}x{h} px) ===\n"
+        f"Palette:\n{pal_str}\n\n"
+        f"ASCII Grid:\n{grid}\n\n"
+        f"To edit this part: Modify the characters in the grid above and call 'skin_set_part_ascii'."
+    )
 
 
 @server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_denoise_palette(
     min_pixel_count: int = 3,
     part_name: Optional[str] = None
 ) -> str:
-    """
-    Automatically clean up compression noise and isolated color artifacts.
-    Replaces pixels that appear fewer than `min_pixel_count` times with their
-    closest dominant palette color, achieving clean pixel-art aesthetics.
-    
-    Args:
-        min_pixel_count: Minimum times a color must appear to be considered legitimate palette color (default: 3).
-        part_name: Optional part to limit denoising to (or None for entire skin).
-    """
-    try:
+    """Clean up compression noise and isolated color artifacts."""
+    with session.lock:
         modified = session.canvas.denoise_palette(min_pixel_count=min_pixel_count, part_name=part_name)
         session.mark_dirty()
-        colors = session.canvas.list_colors(top_n=100)
-        return json.dumps({
-            "status": "success",
-            "modified_pixels": modified,
-            "current_unique_colors": len(colors),
-            "message": f"Denoised palette: healed {modified} artifact pixels. Unique colors now: {len(colors)}."
-        })
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+        colors = session.canvas.list_colors(top_n=100, ignore_transparent=True)
+    return json.dumps({
+        "status": "success",
+        "modified_pixels": modified,
+        "current_unique_colors": len(colors),
+        "message": f"Denoised palette: healed {modified} artifact pixels. Unique colors now: {len(colors)}.",
+    })
 
 
 @server.tool()
+@handle_mcp_errors(json_output=True)
 def skin_import_part(
     source: str,
     part_name: str,
     target_part_name: Optional[str] = None
 ) -> str:
-    """
-    Import an individual anatomical part from an external skin (file path or RAG skin_id)
-    directly into the active editing session.
-    
-    Args:
-        source: External skin PNG file path OR RAG skin_id (e.g. 'skin_syntren_tuxedo.png' or '019a5f6e...').
-        part_name: Name of the part to import (e.g. 'head_front', 'hat_front', 'jacket_front').
-        target_part_name: Optional target part name (defaults to same as part_name).
-    """
-    from .canvas import MINECRAFT_UV_MAP, SkinCanvas
-    from .rag import get_rag
-    
+    """Import an individual anatomical part from an external skin file or RAG skin_id."""
     if part_name not in MINECRAFT_UV_MAP:
         return json.dumps({"error": f"Invalid part_name: '{part_name}'"})
-        
     dst_name = target_part_name or part_name
     if dst_name not in MINECRAFT_UV_MAP:
         return json.dumps({"error": f"Invalid target_part_name: '{dst_name}'"})
-        
-    try:
-        src_canvas = SkinCanvas()
-        if os.path.exists(source):
-            src_canvas.load_png(source)
-        else:
-            rag = get_rag()
-            s_data = rag.get_skin(source, as_canvas=True, as_ascii=False)
-            if not s_data or "canvas" not in s_data:
-                return json.dumps({"error": f"Source '{source}' is neither a valid file path nor an existing skin_id"})
-            src_canvas = s_data["canvas"]
-            
-        session.canvas.push_undo()
+
+    src_canvas = SkinCanvas()
+    if os.path.exists(source):
+        src_canvas.load_png(source)
+    else:
+        rag = get_rag()
+        if not rag.is_available:
+            return json.dumps(rag.get_unavailable_response(query=source))
+        s_data = rag.get_skin(source, as_canvas=True, as_ascii=False)
+        if not s_data or "canvas" not in s_data:
+            return json.dumps({"error": f"Source '{source}' is neither a valid file path nor an existing skin_id"})
+        src_canvas = s_data["canvas"]
+
+    with session.lock:
+        session.push_undo(action=f"import_part:{part_name}->{dst_name}")
         session.canvas.set_part(dst_name, src_canvas.get_part(part_name))
         session.mark_dirty()
-        
-        return json.dumps({
-            "status": "success",
-            "message": f"Successfully imported '{part_name}' from '{source}' into '{dst_name}'. Live viewer updated."
-        })
-    except Exception as e:
-        return json.dumps({"error": str(e)})
 
+    return json.dumps({
+        "status": "success",
+        "message": f"Successfully imported '{part_name}' from '{source}' into '{dst_name}'. Live viewer updated.",
+    })
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_build(
     palette: Dict[str, str],
     parts: Dict[str, str],
@@ -927,32 +1226,22 @@ def skin_build(
     auto_fix: bool = True,
     save_path: Optional[str] = None
 ) -> str:
-    """
-    Generate and assemble a complete 64x64 dual-layer Minecraft skin in a single atomic tool call
-    using an ASCII grid for each UV face with a shared color palette.
+    """Generate and assemble a complete 64x64 dual-layer Minecraft skin in a single atomic call."""
+    with session.lock:
+        session.push_undo(action="skin_build")
+        session.canvas.model = "slim" if model_type and model_type.lower() == "slim" else "default"
+        session.canvas.apply_ascii_skin(palette, parts)
 
-    Args:
-        palette: Mapping from symbol characters to hex colors (e.g. {"#": "#1a1422", "=": "#4d3d5f", ".": "transparent"}).
-        parts: Dictionary of non-empty UV parts mapped to multiline ASCII grid strings (e.g. {"head_front": "...", "jacket_front": "..."}).
-        model_type: Player model geometry ("default" for Steve 4px arms, "slim" for Alex 3px arms).
-        auto_fix: Automatically heal Layer 1 holes (Rule 1) and sanitize Layer 2 floating profile pixels (Rule 2 & 3).
-        save_path: Optional file path to immediately export the 64x64 PNG and update turnaround previews.
-    """
-    session.canvas.push_undo()
-    session.canvas.model = model_type
+        fix_summary = []
+        if auto_fix:
+            healed = session.canvas.heal_layer1_holes()
+            if healed:
+                fix_summary.append(f"Healed {healed} holes on Layer 1")
+            sanitized = session.canvas.sanitize_outer_layer()
+            if sanitized:
+                fix_summary.append(f"Sanitized {sanitized} floating pixels on Layer 2")
 
-    session.canvas.apply_ascii_skin(palette, parts)
-
-    fix_summary = []
-    if auto_fix:
-        healed = session.canvas.heal_layer1_holes()
-        if healed:
-            fix_summary.append(f"Healed {healed} holes on Layer 1")
-        sanitized = session.canvas.sanitize_outer_layer()
-        if sanitized:
-            fix_summary.append(f"Sanitized {sanitized} floating pixels on Layer 2")
-
-    session.mark_dirty()
+        session.mark_dirty()
 
     msg = f"Skin successfully built ({len(parts)} parts rendered, model: {model_type})."
     if fix_summary:
@@ -962,32 +1251,27 @@ def skin_build(
         msg += f" {save_res}"
     return msg
 
+
 @server.tool()
+@handle_mcp_errors()
 def skin_set_part_ascii(
     part_name: str,
     ascii_grid: str,
     palette: Optional[Dict[str, Any]] = None,
     palette_name: Optional[str] = None
 ) -> str:
-    """
-    Draw a part using a multiline ASCII grid.
-    Automatically handles 8-row vs 12-row/4-row scaling.
-    Args:
-        part_name: Target part (e.g. 'head_front', 'hat_front', 'body_front', 'jacket_front').
-        ascii_grid: Multiline string where characters map to colors. Whitespace is stripped.
-        palette: Dictionary mapping characters to hex strings (e.g. {'#': '#1a1422', '.': 'transparent'}) or RGBA lists.
-        palette_name: Optional built-in palette name ('TECHWEAR_CYBERPUNK', 'ANIME_SKIN', 'CASUAL_STREETWEAR', 'FANTASY_KNIGHT').
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'. Valid parts: {list(MINECRAFT_UV_MAP.keys())}"
+    """Draw a part using a multiline ASCII grid."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
 
-    chosen_palette = palette or {}
+    chosen_palette: Dict[str, Any] = palette or {}
     if isinstance(chosen_palette, str):
-        import json
         try:
             chosen_palette = json.loads(chosen_palette)
         except Exception:
-            pass
+            chosen_palette = {}
+
     if palette_name:
         p_name = palette_name.upper().strip()
         if p_name in ("TECHWEAR", "CYBERPUNK", "TECHWEAR_CYBERPUNK"):
@@ -999,41 +1283,35 @@ def skin_set_part_ascii(
         elif p_name in ("FANTASY", "FANTASY_KNIGHT", "KNIGHT"):
             chosen_palette = {**FANTASY_KNIGHT, **chosen_palette}
         else:
-            return f"Error: Unknown palette_name '{palette_name}'. Use 'TECHWEAR_CYBERPUNK', 'ANIME_SKIN', 'CASUAL_STREETWEAR', 'FANTASY_KNIGHT', or pass a palette dict."
+            return f"Error: Unknown palette_name '{palette_name}'."
 
     if not chosen_palette:
         chosen_palette = TECHWEAR_CYBERPUNK
 
-    try:
-        session.canvas.push_undo()
+    with session.lock:
+        session.push_undo(action=f"set_ascii:{part_name}")
         session.canvas.set_ascii(part_name, ascii_grid, chosen_palette)
         session.mark_dirty()
         h, w, _ = session.canvas.parts[part_name].shape
-        return f"Successfully updated '{part_name}' ({w}x{h} px) using ASCII grid. Live viewer updated."
-    except Exception as e:
-        return f"Error applying ASCII grid to '{part_name}': {str(e)}"
+    return f"Successfully updated '{part_name}' ({w}x{h} px) using ASCII grid. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_fill_part(part_name: str, color: str) -> str:
-    """
-    Fill an entire UV face with a solid color.
-    Args:
-        part_name: Target part name (e.g. 'jacket_front', 'head_top').
-        color: Hex string (e.g. '#201624', '#ff00aa', 'transparent') or RGBA list.
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'."
-    try:
-        session.canvas.push_undo()
+    """Fill an entire UV face with a solid color."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+    with session.lock:
+        session.push_undo(action=f"fill_part:{part_name}")
         session.canvas.fill_part(part_name, color)
         session.mark_dirty()
-        return f"Filled '{part_name}' with {color}. Live viewer updated."
-    except Exception as e:
-        return f"Error filling part: {str(e)}"
+    return f"Filled '{part_name}' with {color}. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_draw_rect(
     part_name: str,
     x: int,
@@ -1042,90 +1320,66 @@ def skin_draw_rect(
     height: int,
     color: str
 ) -> str:
-    """
-    Draw a filled rectangle on a part.
-    Args:
-        part_name: Target part name.
-        x: Top-left X coordinate within the part (0-indexed).
-        y: Top-left Y coordinate within the part (0-indexed).
-        width: Rectangle width in pixels.
-        height: Rectangle height in pixels.
-        color: Hex color string (e.g. '#be50fa') or RGBA list.
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'."
-    try:
-        session.canvas.push_undo()
+    """Draw a filled rectangle on a part."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+    with session.lock:
+        session.push_undo(action=f"draw_rect:{part_name}")
         session.canvas.draw_rect(part_name, x, y, width, height, color)
         session.mark_dirty()
-        return f"Drawn rect at ({x}, {y}) of size {width}x{height} on '{part_name}' with color {color}. Live viewer updated."
-    except Exception as e:
-        return f"Error drawing rect: {str(e)}"
+    return f"Drawn rect at ({x}, {y}) of size {width}x{height} on '{part_name}' with color {color}. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_set_pixel(part_name: str, x: int, y: int, color: str) -> str:
-    """
-    Set an individual pixel on a UV part.
-    Args:
-        part_name: Target part name.
-        x: X coordinate (0-indexed).
-        y: Y coordinate (0-indexed).
-        color: Hex string (e.g. '#9a3cd4') or RGBA list.
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'."
-    try:
-        session.canvas.push_undo()
-        session.canvas.set_pixel(part_name, x, y, color)
+    """Set an individual pixel on a UV part."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+    px = PixelCoordSchema(x=x, y=y, color=color)
+    with session.lock:
+        session.push_undo(action=f"set_pixel:{part_name}({px.x},{px.y})")
+        session.canvas.set_pixel(part_name, px.x, px.y, px.color)
         session.mark_dirty()
-        return f"Set pixel ({x}, {y}) on '{part_name}' to {color}. Live viewer updated."
-    except Exception as e:
-        return f"Error setting pixel: {str(e)}"
+    return f"Set pixel ({px.x}, {px.y}) on '{part_name}' to {color}. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_get_pixel(part_name: str, x: int, y: int) -> str:
-    """
-    Get the color of an individual pixel on a UV part.
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'."
-    try:
+    """Get the color of an individual pixel on a UV part."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+    with session.lock:
         rgba = session.canvas.get_pixel(part_name, x, y)
-        hex_c = rgba_to_hex(rgba)
-        return f"Pixel at ({x}, {y}) on '{part_name}': {rgba} ({hex_c})"
-    except Exception as e:
-        return f"Error getting pixel: {str(e)}"
+    hex_c = rgba_to_hex(rgba)
+    return f"Pixel at ({x}, {y}) on '{part_name}': {rgba} ({hex_c})"
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_apply_gradient(
     part_name: str,
     start_color: str,
     end_color: str,
     direction: str = "vertical"
 ) -> str:
-    """
-    Apply a smooth linear color gradient across a part.
-    Args:
-        part_name: Target part name.
-        start_color: Beginning color (top for vertical, left for horizontal).
-        end_color: Ending color (bottom for vertical, right for horizontal).
-        direction: 'vertical' or 'horizontal'.
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'."
-    try:
-        session.canvas.push_undo()
+    """Apply a smooth linear color gradient across a part."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+    with session.lock:
+        session.push_undo(action=f"gradient:{part_name}")
         session.canvas.apply_gradient(part_name, start_color, end_color, direction=direction)
         session.mark_dirty()
-        return f"Applied {direction} gradient ({start_color} -> {end_color}) on '{part_name}'. Live viewer updated."
-    except Exception as e:
-        return f"Error applying gradient: {str(e)}"
+    return f"Applied {direction} gradient ({start_color} -> {end_color}) on '{part_name}'. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_sample_reference(
     image_path: str,
     x: Optional[float] = None,
@@ -1133,43 +1387,30 @@ def skin_sample_reference(
     region: Optional[List[float]] = None,
     num_colors: int = 8
 ) -> str:
-    """
-    Sample exact colors or extract dominant palettes from an image file (PNG, JPEG, WebP)
-    such as concept art, turnaround sheets, or reference skins.
-    Eliminates the need for LLMs to run external Python scripts to inspect reference art.
-    Args:
-        image_path: Absolute or relative path to image file (e.g. 'Reference Skin/reference.jpeg').
-        x: Optional point X coordinate (int pixel or 0.0-1.0 percentage of width).
-        y: Optional point Y coordinate (int pixel or 0.0-1.0 percentage of height).
-        region: Optional bounding box [x0, y0, x1, y1] to crop (pixels or 0.0-1.0 percentages).
-        num_colors: Number of dominant colors to extract (default 8).
-    """
+    """Sample exact colors or extract dominant palettes from an image file."""
     path = os.path.abspath(os.path.expanduser(image_path))
-    try:
-        data = sample_image(path, x=x, y=y, region=region, num_colors=num_colors)
-        if data["mode"] == "point":
-            return (
-                f"=== Sampled Point at {data['sample_coord']} in '{os.path.basename(path)}' ===\n"
-                f"Hex: {data['hex']}\n"
-                f"RGB: {data['rgb']}\n"
-                f"RGBA: {data['rgba']}\n"
-                f"Perceived Luminance: {data['luminance']}"
-            )
-        else:
-            lines = [
-                f"=== Extracted Palette from '{os.path.basename(path)}' (Crop: {data['crop_box']}) ===",
-                "Colors:"
-            ]
-            for c in data["colors"]:
-                lines.append(f"  '{c['char']}': {c['hex']} (RGB: {c['rgb']}, {c['percentage']}%, role: {c['suggested_role']})")
-            lines.append("\nReady-to-use ASCII Palette dictionary:")
-            lines.append(json.dumps(data["ascii_palette"], indent=2))
-            return "\n".join(lines)
-    except Exception as e:
-        return f"Error sampling reference image '{path}': {str(e)}"
+    data = sample_image(path, x=x, y=y, region=region, num_colors=num_colors)
+    if data["mode"] == "point":
+        return (
+            f"=== Sampled Point at {data['sample_coord']} in '{os.path.basename(path)}' ===\n"
+            f"Hex: {data['hex']}\n"
+            f"RGB: {data['rgb']}\n"
+            f"RGBA: {data['rgba']}\n"
+            f"Perceived Luminance: {data['luminance']}"
+        )
+    lines = [
+        f"=== Extracted Palette from '{os.path.basename(path)}' (Crop: {data['crop_box']}) ===",
+        "Colors:",
+    ]
+    for c in data["colors"]:
+        lines.append(f"  '{c['char']}': {c['hex']} (RGB: {c['rgb']}, {c['percentage']}%, role: {c['suggested_role']})")
+    lines.append("\nReady-to-use ASCII Palette dictionary:")
+    lines.append(json.dumps(data["ascii_palette"], indent=2))
+    return "\n".join(lines)
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_replace_color(
     old_color: str,
     new_color: str,
@@ -1177,38 +1418,27 @@ def skin_replace_color(
     tolerance: int = 15,
     layer: str = "both"
 ) -> str:
-    """
-    Fuzzy replace occurrences of old_color with new_color within an RGB tolerance threshold.
-    Allows LLMs to perform color tweaks (e.g. 'make the purple eyes brighter' or 'change trim color')
-    in a single tool call without sending massive ASCII grids.
-    Args:
-        old_color: Target color to match (hex e.g. '#9a3cd4' or RGBA list).
-        new_color: Replacement color (hex e.g. '#af36f8' or RGBA list).
-        part_name: Optional specific face name (e.g. 'head_front') or None/'all' for the whole skin.
-        tolerance: Euclidean RGB color distance threshold (default 15).
-        layer: 'both', 'base' (Layer 1 only), or 'outer' (Layer 2 only).
-    """
-    try:
-        session.canvas.push_undo()
+    """Fuzzy replace occurrences of old_color with new_color within an RGB tolerance threshold."""
+    with session.lock:
+        session.push_undo(action=f"replace_color:{old_color}->{new_color}")
         count, affected = session.canvas.replace_color(
             old_color=old_color,
             new_color=new_color,
             part_name=part_name,
             tolerance=tolerance,
-            layer=layer
+            layer=layer,
         )
         session.mark_dirty()
-        return (
-            f"Successfully replaced color {old_color} -> {new_color} (tolerance={tolerance}):\n"
-            f"- Total pixels replaced: {count}\n"
-            f"- Affected parts ({len(affected)}): {', '.join(affected) if affected else 'none'}\n"
-            f"Live viewer updated."
-        )
-    except Exception as e:
-        return f"Error replacing color: {str(e)}"
+    return (
+        f"Successfully replaced color {old_color} -> {new_color} (tolerance={tolerance}):\n"
+        f"- Total pixels replaced: {count}\n"
+        f"- Affected parts ({len(affected)}): {', '.join(affected) if affected else 'none'}\n"
+        f"Live viewer updated."
+    )
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_adjust_hsv(
     part_name: Optional[str] = None,
     hue_shift: float = 0.0,
@@ -1218,20 +1448,9 @@ def skin_adjust_hsv(
     tolerance: int = 30,
     layer: str = "both"
 ) -> str:
-    """
-    Vectorized Hue, Saturation, and Brightness adjustment across part(s) or entire skin (< 1ms).
-    Can optionally target only pixels matching a specific color within an RGB tolerance threshold.
-    Args:
-        part_name: Face name (e.g. 'head_front', 'hat_front') or None/'all' for whole skin.
-        hue_shift: Degrees to rotate hue (-180..+180 or 0..360). E.g. +120 shifts purple -> green/cyan.
-        sat_mult: Saturation multiplier (0.0 = grayscale, 1.0 = unchanged, 1.5 = +50% more vivid).
-        val_mult: Value/Brightness multiplier (0.8 = 20% darker, 1.2 = 20% brighter).
-        target_color: Optional hex or RGBA color to selectively adjust only matching pixels (e.g. '#9a3cd4').
-        tolerance: Euclidean distance threshold for target_color filter (default 30).
-        layer: 'both', 'base' (Layer 1 only), or 'outer' (Layer 2 only).
-    """
-    try:
-        session.canvas.push_undo()
+    """Vectorized Hue, Saturation, and Brightness adjustment across part(s) or entire skin."""
+    with session.lock:
+        session.push_undo(action=f"adjust_hsv:{part_name or layer}")
         adjusted, affected = session.canvas.adjust_hsv(
             part_name=part_name,
             hue_shift=hue_shift,
@@ -1239,22 +1458,21 @@ def skin_adjust_hsv(
             val_mult=val_mult,
             target_color=target_color,
             tolerance=tolerance,
-            layer=layer
+            layer=layer,
         )
         session.mark_dirty()
-        target_desc = part_name or f"entire skin (layer={layer})"
-        filter_desc = f" matching target {target_color} (tol={tolerance})" if target_color else ""
-        return (
-            f"Adjusted HSV on {target_desc}{filter_desc}:\n"
-            f"- Hue shift: {hue_shift}° | Saturation: x{sat_mult} | Value/Brightness: x{val_mult}\n"
-            f"- Total pixels adjusted: {adjusted} across {len(affected)} part(s).\n"
-            f"Live viewer updated."
-        )
-    except Exception as e:
-        return f"Error adjusting HSV: {str(e)}"
+    target_desc = part_name or f"entire skin (layer={layer})"
+    filter_desc = f" matching target {target_color} (tol={tolerance})" if target_color else ""
+    return (
+        f"Adjusted HSV on {target_desc}{filter_desc}:\n"
+        f"- Hue shift: {hue_shift}° | Saturation: x{sat_mult} | Value/Brightness: x{val_mult}\n"
+        f"- Total pixels adjusted: {adjusted} across {len(affected)} part(s).\n"
+        f"Live viewer updated."
+    )
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_shift_hue(
     hue_shift: float,
     part_name: Optional[str] = None,
@@ -1262,16 +1480,7 @@ def skin_shift_hue(
     tolerance: int = 30,
     layer: str = "both"
 ) -> str:
-    """
-    Convenience tool to rotate color hue (e.g. shift purple accents to neon cyan or red)
-    without altering saturation or brightness.
-    Args:
-        hue_shift: Degrees to rotate hue (-180..+180 or 0..360).
-        part_name: Specific face or None for entire skin.
-        target_color: Optional hex color to only shift matching accents (e.g. '#af36f8').
-        tolerance: RGB distance threshold (default 30).
-        layer: 'both', 'base', or 'outer'.
-    """
+    """Convenience tool to rotate color hue without altering saturation or brightness."""
     return skin_adjust_hsv(
         part_name=part_name,
         hue_shift=hue_shift,
@@ -1279,173 +1488,206 @@ def skin_shift_hue(
         val_mult=1.0,
         target_color=target_color,
         tolerance=tolerance,
-        layer=layer
+        layer=layer,
     )
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_set_pixels(
     part_name: str,
     pixels: List[Dict[str, Any]]
 ) -> str:
-    """
-    Efficiently set multiple individual pixels on a part in a single call.
-    Ideal for micro-edits (e.g. changing 4 eye pixels or a 2-pixel logo) without dumping a full ASCII grid.
-    Args:
-        part_name: Target part name (e.g. 'head_front').
-        pixels: List of dicts, each with 'x', 'y', and 'color' keys.
-                Example: [{'x': 1, 'y': 5, 'color': '#b59ddb'}, {'x': 2, 'y': 5, 'color': '#7d0bd2'}]
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'. Valid parts: {list(MINECRAFT_UV_MAP.keys())}"
-    try:
-        session.canvas.push_undo()
+    """Efficiently set multiple individual pixels on a part in a single call."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+    with session.lock:
+        session.push_undo(action=f"set_pixels:{part_name}")
         count = session.canvas.set_pixels(part_name, pixels)
         session.mark_dirty()
-        return f"Successfully updated {count} pixel(s) on part '{part_name}'. Live viewer updated."
-    except Exception as e:
-        return f"Error setting pixels on '{part_name}': {str(e)}"
+    return f"Successfully updated {count} pixel(s) on part '{part_name}'. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_list_colors(
     part_name: Optional[str] = None,
     top_n: int = 16
 ) -> str:
-    """
-    Inspect unique colors and frequency counts on a specific face or the entire skin canvas.
-    Args:
-        part_name: Optional part name (e.g. 'head_front', 'body_front') or None for all parts.
-        top_n: Max number of dominant colors to display (default 16).
-    """
-    try:
+    """Inspect unique colors and frequency counts on a specific face or the entire skin canvas."""
+    with session.lock:
         colors = session.canvas.list_colors(part_name=part_name, top_n=top_n)
-        target_name = part_name or "entire canvas"
-        lines = [f"=== Top Colors on {target_name} ==="]
-        for c in colors:
-            alpha_note = " (transparent)" if c["alpha"] == 0 else ""
-            lines.append(f"  {c['hex']} - RGB: {c['rgb']} | count: {c['count']} px ({c['percentage']}%) {alpha_note}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error listing colors: {str(e)}"
+    target_name = part_name or "entire canvas"
+    lines = [f"=== Top Colors on {target_name} ==="]
+    for c in colors:
+        alpha_note = " (transparent)" if c["alpha"] == 0 else ""
+        lines.append(f"  {c['hex']} - RGB: {c['rgb']} | count: {c['count']} px ({c['percentage']}%) {alpha_note}")
+    return "\n".join(lines)
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_diff(
     other_file_path: str,
     part_name: Optional[str] = None
 ) -> str:
-    """
-    Compare the current in-memory skin canvas against another skin PNG file.
-    Identifies which of the 72 parts differ and by how many pixels, with exact sample coordinates.
-    Args:
-        other_file_path: Absolute or relative path to other skin PNG.
-        part_name: Optional part name to restrict comparison to a single face.
-    """
+    """Compare the current in-memory skin canvas against another skin PNG file."""
     path = os.path.abspath(os.path.expanduser(other_file_path))
     if not os.path.exists(path):
         return f"Error: File not found at '{path}'."
-    try:
+    with session.lock:
         report = session.canvas.diff(path, part_name=part_name)
-        status = report["status"].upper()
-        lines = [
-            f"=== Skin Diff Report: Active Session vs '{os.path.basename(path)}' ===",
-            f"Status: {status}",
-            f"Total Differing Pixels: {report['total_diff_pixels']}",
-            f"Differing Parts: {report['differing_parts_count']} | Identical Parts: {report['identical_parts_count']}",
-        ]
-        if report["differing_parts"]:
-            lines.append("\nDiffering Parts Details:")
-            for p in report["differing_parts"]:
-                coords = ", ".join(f"({c['x']},{c['y']})" for c in p["sample_coords"][:6])
-                lines.append(f"  - {p['part_name']}: {p['diff_pixels']} px differ (coords: {coords})")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error comparing skins: {str(e)}"
+    status = report["status"].upper()
+    lines = [
+        f"=== Skin Diff Report: Active Session vs '{os.path.basename(path)}' ===",
+        f"Status: {status}",
+        f"Total Differing Pixels: {report['total_diff_pixels']}",
+        f"Differing Parts: {report['differing_parts_count']} | Identical Parts: {report['identical_parts_count']}",
+    ]
+    if report["differing_parts"]:
+        lines.append("\nDiffering Parts Details:")
+        for p in report["differing_parts"]:
+            coords = ", ".join(f"({c['x']},{c['y']})" for c in p["sample_coords"][:6])
+            lines.append(f"  - {p['part_name']}: {p['diff_pixels']} px differ (coords: {coords})")
+    return "\n".join(lines)
+
+
+def _execute_preset_on_canvas(canvas: SkinCanvas, preset_name: str, params: Optional[Dict[str, Any]] = None) -> None:
+    p = params or {}
+    if preset_name == "anime_eyes_2x2":
+        draw_anime_eyes_2x2(
+            canvas,
+            left_col=p.get("left_col", 1),
+            right_col=p.get("right_col", 5),
+            row=p.get("row", 5),
+            iris_color=p.get("iris_color", "#af36f8"),
+            highlight_color=p.get("highlight_color", "#b59ddb"),
+            shadow_color=p.get("shadow_color", "#7d0bd2"),
+            shine_color=p.get("shine_color", "#faf8fc"),
+            style=p.get("style", "cyber_glow"),
+        )
+    elif preset_name == "hoodie_drawstrings":
+        draw_hoodie_drawstrings(
+            canvas,
+            col_left=p.get("col_left", 2),
+            col_right=p.get("col_right", 5),
+            row_start=p.get("row_start", 1),
+            len_left=p.get("len_left", 7),
+            len_right=p.get("len_right", 4),
+            color_bright=p.get("color_bright", "#c355ff"),
+            color_tip=p.get("color_tip", "#501278"),
+        )
+    elif preset_name == "cargo_pocket":
+        draw_cargo_pocket(
+            canvas,
+            part_name=p.get("part_name", "right_pants_right"),
+            y_start=p.get("y_start", 2),
+            flap_color=p.get("flap_color", "#26222e"),
+            pouch_color=p.get("pouch_color", "#1e1a24"),
+            buckle_color=p.get("buckle_color", "#9a32dc"),
+        )
+    elif preset_name == "hair_bangs":
+        draw_hair_bangs(
+            canvas,
+            style=p.get("style", "cyberpunk"),
+            hair_color=p.get("hair_color", "#1e1824"),
+            highlight_color=p.get("highlight_color", "#9a3cd4"),
+        )
+    elif preset_name == "sneakers":
+        draw_sneakers(
+            canvas,
+            limb=p.get("limb", "right_leg"),
+            sole_color=p.get("sole_color", "#ffffff"),
+            body_color=p.get("body_color", "#16141e"),
+            accent_color=p.get("accent_color", "#9a32dc"),
+        )
+    elif preset_name == "headphones":
+        draw_headphones(
+            canvas,
+            earcup_color=p.get("earcup_color", "#9a3cd4"),
+            band_color=p.get("band_color", "#221c2c"),
+            glow_color=p.get("glow_color", "#d264ff"),
+        )
+    else:
+        raise ValueError(
+            f"Unknown preset '{preset_name}'. Supported: anime_eyes_2x2, hoodie_drawstrings, "
+            "cargo_pocket, hair_bangs, sneakers, headphones."
+        )
 
 
 @server.tool()
-def skin_batch_actions(
-    actions: List[Dict[str, Any]]
-) -> str:
-    """
-    Execute multiple skin authoring actions in a single atomic MCP call.
-    Drastically reduces token usage and network round trips.
-    Supported actions:
-      - {'action': 'set_pixel', 'part_name': '...', 'x': int, 'y': int, 'color': '...'}
-      - {'action': 'set_pixels', 'part_name': '...', 'pixels': [...]}
-      - {'action': 'replace_color', 'old_color': '...', 'new_color': '...', 'part_name': '...'}
-      - {'action': 'draw_rect', 'part_name': '...', 'x': int, 'y': int, 'width': int, 'height': int, 'color': '...'}
-      - {'action': 'fill_part', 'part_name': '...', 'color': '...'}
-      - {'action': 'apply_preset', 'preset_name': '...', 'params': {...}}
-      - {'action': 'mirror_limb', 'src_limb': '...', 'dst_limb': '...', 'mirror_layer2': bool}
-      - {'action': 'add_noise', 'part_name': '...', 'amount': int}
-      - {'action': 'apply_gradient', 'part_name': '...', 'start_color': '...', 'end_color': '...', 'direction': '...'}
-    """
-    session.canvas.push_undo()
-    summary = []
-    success_count = 0
-    for idx, act in enumerate(actions):
-        a_type = act.get("action")
-        try:
-            if a_type == "set_pixel":
-                session.canvas.set_pixel(act["part_name"], act["x"], act["y"], normalize_color(act["color"]))
-                summary.append(f"[{idx+1}] set_pixel on '{act['part_name']}' at ({act['x']}, {act['y']})")
-            elif a_type == "set_pixels":
-                c = session.canvas.set_pixels(act["part_name"], act["pixels"])
-                summary.append(f"[{idx+1}] set_pixels on '{act['part_name']}': {c} px")
-            elif a_type == "replace_color":
-                c, aff = session.canvas.replace_color(
-                    act["old_color"], act["new_color"],
-                    part_name=act.get("part_name"),
-                    tolerance=act.get("tolerance", 15),
-                    layer=act.get("layer", "both")
-                )
-                summary.append(f"[{idx+1}] replace_color: {c} px across {len(aff)} parts")
-            elif a_type == "draw_rect":
-                session.canvas.draw_rect(
-                    act["part_name"], act["x"], act["y"], act["width"], act["height"],
-                    normalize_color(act["color"])
-                )
-                summary.append(f"[{idx+1}] draw_rect on '{act['part_name']}'")
-            elif a_type == "fill_part":
-                session.canvas.fill_part(act["part_name"], normalize_color(act["color"]))
-                summary.append(f"[{idx+1}] fill_part on '{act['part_name']}'")
-            elif a_type == "apply_preset":
-                skin_apply_preset(act["preset_name"], act.get("params"))
-                summary.append(f"[{idx+1}] apply_preset '{act['preset_name']}'")
-            elif a_type == "mirror_limb":
-                session.canvas.mirror_limb(
-                    src_limb=act.get("src_limb", "right_arm"),
-                    dst_limb=act.get("dst_limb", "left_arm"),
-                    mirror_layer2=act.get("mirror_layer2", True)
-                )
-                summary.append(f"[{idx+1}] mirror_limb {act.get('src_limb')} -> {act.get('dst_limb')}")
-            elif a_type == "add_noise":
-                session.canvas.add_noise(act["part_name"], amount=act.get("amount", 6))
-                summary.append(f"[{idx+1}] add_noise on '{act['part_name']}'")
-            elif a_type == "apply_gradient":
-                session.canvas.apply_gradient(
-                    act["part_name"], act["start_color"], act["end_color"],
-                    direction=act.get("direction", "vertical")
-                )
-                summary.append(f"[{idx+1}] apply_gradient on '{act['part_name']}'")
-            else:
-                summary.append(f"[{idx+1}] WARNING: Unknown action '{a_type}'")
-                continue
-            success_count += 1
-        except Exception as e:
-            summary.append(f"[{idx+1}] ERROR in action '{a_type}': {str(e)}")
+@handle_mcp_errors()
+def skin_batch_actions(actions: List[Dict[str, Any]]) -> str:
+    """Execute multiple skin authoring actions in a single atomic MCP call."""
+    with session.lock:
+        session.push_undo(action=f"batch_actions({len(actions)})")
+        summary = []
+        success_count = 0
+        for idx, raw_act in enumerate(actions):
+            try:
+                act = BatchActionSchema(**raw_act)
+                a_type = act.action
+                if a_type == "set_pixel":
+                    session.canvas.set_pixel(str(act.part_name), int(act.x or 0), int(act.y or 0), normalize_color(act.color))
+                    summary.append(f"[{idx+1}] set_pixel on '{act.part_name}' at ({act.x}, {act.y})")
+                elif a_type == "set_pixels":
+                    c = session.canvas.set_pixels(str(act.part_name), act.pixels or [])
+                    summary.append(f"[{idx+1}] set_pixels on '{act.part_name}': {c} px")
+                elif a_type == "replace_color":
+                    c, aff = session.canvas.replace_color(
+                        act.old_color, act.new_color,
+                        part_name=act.part_name,
+                        tolerance=act.tolerance,
+                        layer=act.layer,
+                    )
+                    summary.append(f"[{idx+1}] replace_color: {c} px across {len(aff)} parts")
+                elif a_type == "draw_rect":
+                    session.canvas.draw_rect(
+                        str(act.part_name), int(act.x or 0), int(act.y or 0),
+                        int(act.width or 1), int(act.height or 1),
+                        normalize_color(act.color),
+                    )
+                    summary.append(f"[{idx+1}] draw_rect on '{act.part_name}'")
+                elif a_type == "fill_part":
+                    session.canvas.fill_part(str(act.part_name), normalize_color(act.color))
+                    summary.append(f"[{idx+1}] fill_part on '{act.part_name}'")
+                elif a_type == "apply_preset":
+                    _execute_preset_on_canvas(session.canvas, str(act.preset_name), act.params)
+                    summary.append(f"[{idx+1}] apply_preset '{act.preset_name}'")
+                elif a_type == "mirror_limb":
+                    session.canvas.mirror_limb(
+                        src_limb=act.src_limb,
+                        dst_limb=act.dst_limb,
+                        mirror_layer2=act.mirror_layer2,
+                    )
+                    summary.append(f"[{idx+1}] mirror_limb {act.src_limb} -> {act.dst_limb}")
+                elif a_type == "add_noise":
+                    session.canvas.add_noise(str(act.part_name), amount=act.amount)
+                    summary.append(f"[{idx+1}] add_noise on '{act.part_name}'")
+                elif a_type == "apply_gradient":
+                    session.canvas.apply_gradient(
+                        str(act.part_name), act.start_color, act.end_color,
+                        direction=act.direction,
+                    )
+                    summary.append(f"[{idx+1}] apply_gradient on '{act.part_name}'")
+                else:
+                    summary.append(f"[{idx+1}] WARNING: Unknown action '{a_type}'")
+                    continue
+                success_count += 1
+            except Exception as exc:
+                summary.append(f"[{idx+1}] ERROR in action '{raw_act.get('action')}': {str(exc)}")
 
-    session.mark_dirty()
+        session.mark_dirty()
     return f"Batch Execution Complete ({success_count}/{len(actions)} succeeded). Live viewer updated:\n" + "\n".join(summary)
 
 
 # ============================================================================
-# 4. HIGH-LEVEL PRESETS, TYPOGRAPHY & OUTFITS
+# 5. HIGH-LEVEL PRESETS, TYPOGRAPHY & OUTFITS
 # ============================================================================
 
 @server.tool()
+@handle_mcp_errors()
 def skin_draw_text(
     part_name: str,
     text: str,
@@ -1454,27 +1696,16 @@ def skin_draw_text(
     color: str = "#ffffff",
     spacing: int = 1
 ) -> str:
-    """
-    Render pixel typography on a UV face using an ultra-crisp 3x5 font matrix.
-    Supports letters A-Z, numbers 0-9, and punctuation (!, ?, -, :, .).
-    Args:
-        part_name: Target UV face (e.g. 'jacket_back', 'body_front').
-        text: Text string to render.
-        x: Column starting coordinate (0-indexed).
-        y: Row starting coordinate (0-indexed).
-        color: Hex or RGBA string.
-        spacing: Pixel spacing between characters (default 1).
-    """
-    try:
-        session.canvas.push_undo()
+    """Render pixel typography on a UV face using an ultra-crisp 3x5 font matrix."""
+    with session.lock:
+        session.push_undo(action=f"draw_text:{part_name}:{text}")
         count = draw_text(session.canvas, part_name=part_name, text=text, x=x, y=y, color=color, spacing=spacing)
         session.mark_dirty()
-        return f"Rendered text '{text}' on '{part_name}' at ({x}, {y}) using color {color} ({count} pixels drawn). Live viewer updated."
-    except Exception as e:
-        return f"Error rendering text: {str(e)}"
+    return f"Rendered text '{text}' on '{part_name}' at ({x}, {y}) using color {color} ({count} pixels drawn). Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_draw_symbol(
     part_name: str,
     symbol_name: str,
@@ -1482,26 +1713,16 @@ def skin_draw_symbol(
     y: int = 1,
     color: str = "#ffffff"
 ) -> str:
-    """
-    Render a pixel symbol/emblem on a UV face without guessing pixel coordinates.
-    Available symbols: 'cyber_s' (6x8 crest), 'heart' (5x5), 'star' (5x5), 'lightning' (3x6), 'skull' (5x5), 'cross' (5x5).
-    Args:
-        part_name: Target face (e.g. 'jacket_back', 'body_front', 'right_arm_right').
-        symbol_name: Name of symbol from library.
-        x: Top-left X coordinate.
-        y: Top-left Y coordinate.
-        color: Hex color string.
-    """
-    try:
-        session.canvas.push_undo()
+    """Render a pixel symbol/emblem on a UV face ('cyber_s', 'heart', 'star', 'lightning', 'skull', 'cross')."""
+    with session.lock:
+        session.push_undo(action=f"draw_symbol:{part_name}:{symbol_name}")
         count = draw_symbol(session.canvas, part_name=part_name, symbol_name=symbol_name, x=x, y=y, color=color)
         session.mark_dirty()
-        return f"Rendered symbol '{symbol_name}' on '{part_name}' at ({x}, {y}) with color {color} ({count} pixels drawn). Live viewer updated."
-    except Exception as e:
-        return f"Error rendering symbol: {str(e)}"
+    return f"Rendered symbol '{symbol_name}' on '{part_name}' at ({x}, {y}) with color {color} ({count} pixels drawn). Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_apply_outfit(
     style: str = "techwear_hoodie",
     primary_color: str = "#141018",
@@ -1509,198 +1730,101 @@ def skin_apply_outfit(
     accent_color: str = "#af36f8",
     trim_color: str = "#faf8fc"
 ) -> str:
-    """
-    Apply a complete coordinated full-body outfit macro across Layer 1 and Layer 2.
-    Ensures 100% adherence to Rule 1 (solid body) and Rule 2 (relief accents).
-    Styles:
-        - 'techwear_hoodie': Oversized cyberpunk hoodie, kangaroo pouch, asymmetric drawstrings, cargo pants, 3D back crest.
-        - 'cargo_streetwear': Relaxed hoodie with cargo pockets on both legs and cyber sneakers.
-        - 'casual_tshirt': Everyday crewneck t-shirt with denim jeans, belt, and sneaker shoes.
-    """
-    try:
-        session.canvas.push_undo()
+    """Apply a complete coordinated full-body outfit macro across Layer 1 and Layer 2."""
+    with session.lock:
+        session.push_undo(action=f"apply_outfit:{style}")
         res = apply_outfit(
             session.canvas,
             style=style,
             primary_color=primary_color,
             secondary_color=secondary_color,
             accent_color=accent_color,
-            trim_color=trim_color
+            trim_color=trim_color,
         )
         session.mark_dirty()
-        return (
-            f"Applied outfit '{res['style']}' across {res['parts_modified_count']} parts:\n"
-            f"- Primary: {primary_color} | Secondary: {secondary_color} | Accent: {accent_color} | Trim: {trim_color}\n"
-            f"Live viewer updated."
-        )
-    except Exception as e:
-        return f"Error applying outfit: {str(e)}"
+    return (
+        f"Applied outfit '{res['style']}' across {res['parts_modified_count']} parts:\n"
+        f"- Primary: {primary_color} | Secondary: {secondary_color} | Accent: {accent_color} | Trim: {trim_color}\n"
+        f"Live viewer updated."
+    )
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_convert_model(target_model: str = "slim") -> str:
-    """
-    Convert canvas between 'default' (Steve 4px arms) and 'slim' (Alex 3px arms).
-    Automatically resamples arm front/back/top/bottom UV islands.
-    Args:
-        target_model: 'slim' (Alex 3px arms) or 'default' (Steve 4px arms).
-    """
-    try:
-        session.canvas.push_undo()
+    """Convert canvas between 'default' (Steve 4px arms) and 'slim' (Alex 3px arms)."""
+    with session.lock:
+        session.push_undo(action=f"convert_model:{target_model}")
         res = convert_skin_model(session.canvas, target_model=target_model)
-        session.model = target_model
+        session.model = session.canvas.model
         session.mark_dirty()
-        return f"{res['message']} (status: {res['status']}). Live viewer updated."
-    except Exception as e:
-        return f"Error converting model geometry: {str(e)}"
+    return f"{res['message']} (status: {res['status']}). Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_mirror_limb(
     src_limb: str = "right_arm",
     dst_limb: str = "left_arm",
     mirror_layer2: bool = True
 ) -> str:
-    """
-    Mirror an entire limb (arm or leg) to the other side.
-    Correctly swaps outer and inner faces (right <-> left) and flips front/back.
-    Args:
-        src_limb: 'right_arm', 'left_arm', 'right_leg', or 'left_leg'.
-        dst_limb: Target limb to overwrite with mirrored version.
-        mirror_layer2: Whether to also mirror the outer layer (sleeve or pants).
-    """
-    try:
-        session.canvas.push_undo()
+    """Mirror an entire limb (arm or leg) to the other side."""
+    with session.lock:
+        session.push_undo(action=f"mirror_limb:{src_limb}->{dst_limb}")
         session.canvas.mirror_limb(src_limb=src_limb, dst_limb=dst_limb, mirror_layer2=mirror_layer2)
         session.mark_dirty()
-        return f"Mirrored {src_limb} -> {dst_limb} (with Layer 2: {mirror_layer2}). Live viewer updated."
-    except Exception as e:
-        return f"Error mirroring limb: {str(e)}"
+    return f"Mirrored {src_limb} -> {dst_limb} (with Layer 2: {mirror_layer2}). Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_add_noise(part_name: str, amount: int = 6) -> str:
-    """
-    Inject subtle procedural microtexture/noise into a part to prevent a flat, plastic look.
-    Preserves transparent pixels.
-    Args:
-        part_name: Part name.
-        amount: Noise intensity (default 6, values 2-10 recommended).
-    """
-    if part_name not in MINECRAFT_UV_MAP:
-        return f"Error: Unknown part '{part_name}'."
-    session.canvas.push_undo()
-    session.canvas.add_noise(part_name, amount=amount)
-    session.mark_dirty()
+    """Inject subtle procedural microtexture/noise into a part, preserving transparent pixels."""
+    err = _validate_part_name(part_name)
+    if err:
+        return err
+    with session.lock:
+        session.push_undo(action=f"add_noise:{part_name}")
+        session.canvas.add_noise(part_name, amount=amount)
+        session.mark_dirty()
     return f"Injected microtexture (amount={amount}) on '{part_name}'. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_apply_preset(
     preset_name: str,
     params: Optional[Dict[str, Any]] = None
 ) -> str:
-    """
-    Apply a modular anatomical or clothing preset.
-    Available presets:
-      - 'anime_eyes_2x2': params: {'row': 5, 'left_col': 1, 'right_col': 5, 'iris_color': '#9a3cd4', 'highlight_color': '#e9d6f0', 'shadow_color': '#5f2987'}
-      - 'hoodie_drawstrings': params: {'col_left': 2, 'col_right': 5, 'row_start': 1, 'len_left': 7, 'len_right': 4, 'color_bright': '#c355ff', 'color_tip': '#501278'}
-      - 'cargo_pocket': params: {'part_name': 'right_pants_right', 'y_start': 2, 'flap_color': '#26222e', 'pouch_color': '#1e1a24', 'buckle_color': '#9a32dc'}
-      - 'hair_bangs': params: {'style': 'cyberpunk', 'hair_color': '#1e1824', 'highlight_color': '#9a3cd4'}
-      - 'sneakers': params: {'limb': 'right_leg', 'sole_color': '#ffffff', 'body_color': '#16141e', 'accent_color': '#9a32dc'}
-      - 'headphones': params: {'earcup_color': '#9a32dc', 'band_color': '#221c2c', 'glow_color': '#d264ff'}
-    """
-    p = params or {}
-    try:
-        session.canvas.push_undo()
-        if preset_name == "anime_eyes_2x2":
-            draw_anime_eyes_2x2(
-                session.canvas,
-                left_col=p.get("left_col", 1),
-                right_col=p.get("right_col", 5),
-                row=p.get("row", 5),
-                iris_color=p.get("iris_color", "#af36f8"),
-                highlight_color=p.get("highlight_color", "#b59ddb"),
-                shadow_color=p.get("shadow_color", "#7d0bd2"),
-                shine_color=p.get("shine_color", "#faf8fc"),
-                style=p.get("style", "cyber_glow"),
-            )
-        elif preset_name == "hoodie_drawstrings":
-            draw_hoodie_drawstrings(
-                session.canvas,
-                col_left=p.get("col_left", 2),
-                col_right=p.get("col_right", 5),
-                row_start=p.get("row_start", 1),
-                len_left=p.get("len_left", 7),
-                len_right=p.get("len_right", 4),
-                color_bright=p.get("color_bright", "#c355ff"),
-                color_tip=p.get("color_tip", "#501278"),
-            )
-        elif preset_name == "cargo_pocket":
-            draw_cargo_pocket(
-                session.canvas,
-                part_name=p.get("part_name", "right_pants_right"),
-                y_start=p.get("y_start", 2),
-                flap_color=p.get("flap_color", "#26222e"),
-                pouch_color=p.get("pouch_color", "#1e1a24"),
-                buckle_color=p.get("buckle_color", "#9a32dc"),
-            )
-        elif preset_name == "hair_bangs":
-            draw_hair_bangs(
-                session.canvas,
-                style=p.get("style", "cyberpunk"),
-                hair_color=p.get("hair_color", "#1e1824"),
-                highlight_color=p.get("highlight_color", "#9a3cd4"),
-            )
-        elif preset_name == "sneakers":
-            draw_sneakers(
-                session.canvas,
-                limb=p.get("limb", "right_leg"),
-                sole_color=p.get("sole_color", "#ffffff"),
-                body_color=p.get("body_color", "#16141e"),
-                accent_color=p.get("accent_color", "#9a32dc"),
-            )
-        elif preset_name == "headphones":
-            draw_headphones(
-                session.canvas,
-                earcup_color=p.get("earcup_color", "#9a3cd4"),
-                band_color=p.get("band_color", "#221c2c"),
-                glow_color=p.get("glow_color", "#d264ff"),
-            )
-        else:
-            return f"Error: Unknown preset '{preset_name}'. Supported: anime_eyes_2x2, hoodie_drawstrings, cargo_pocket, hair_bangs, sneakers, headphones."
-
+    """Apply a modular anatomical or clothing preset."""
+    with session.lock:
+        session.push_undo(action=f"apply_preset:{preset_name}")
+        _execute_preset_on_canvas(session.canvas, preset_name, params)
         session.mark_dirty()
-        return f"Successfully applied preset '{preset_name}'. Live viewer updated."
-    except Exception as e:
-        return f"Error applying preset '{preset_name}': {str(e)}"
+    return f"Successfully applied preset '{preset_name}'. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_clear_outer_layer(parts: Optional[List[str]] = None) -> str:
-    """
-    Clear all Layer 2 (Outer Overlay) parts or specific parts to transparent [0, 0, 0, 0].
-    Useful for removing bloated overlay elements before re-applying clean 3D relief.
-    """
-    session.canvas.push_undo()
-    cleared = session.canvas.clear_layer(layer="outer", parts=parts)
-    session.mark_dirty()
+    """Clear all Layer 2 (Outer Overlay) parts or specific parts to transparent [0, 0, 0, 0]."""
+    with session.lock:
+        session.push_undo(action="clear_outer_layer")
+        cleared = session.canvas.clear_layer(layer="outer", parts=parts)
+        session.mark_dirty()
     return f"Cleared {cleared} outer parts to 100% transparency. Live viewer updated."
 
 
 # ============================================================================
-# 5. VALIDATION, SEAM AUDITING & AUTO-HEALING
+# 6. VALIDATION, SEAM AUDITING & AUTO-HEALING
 # ============================================================================
 
 @server.tool()
+@handle_mcp_errors()
 def skin_check_seams(tolerance: int = 35) -> str:
-    """
-    Audit 3D cube edge wrap-around continuity across adjacent faces (Head ring, crown, torso ring, jacket).
-    Detects texture tears, color misalignments, and seam borders visible when orbiting around the 3D model.
-    Args:
-        tolerance: Color distance threshold above which an edge pixel is flagged (default 35).
-    """
-    discrepancies = check_seams(session.canvas, tolerance=tolerance)
+    """Audit 3D cube edge wrap-around continuity across adjacent faces."""
+    with session.lock:
+        discrepancies = check_seams(session.canvas, tolerance=tolerance)
     if not discrepancies:
         return f"Pass: All 3D seams are continuous and well-aligned (tolerance={tolerance}). Zero texture tears detected."
 
@@ -1710,7 +1834,7 @@ def skin_check_seams(tolerance: int = 35) -> str:
     ]
     for d in discrepancies:
         lines.append(f"\n* Seam: {d['seam_name']} ({d['part_a']} <-> {d['part_b']}) - {d['mismatch_count']} mismatched px:")
-        for m in d["mismatches"][:5]:  # limit to 5 per seam to save tokens
+        for m in d["mismatches"][:5]:
             lines.append(f"    - Index {m['index']}: {m['color_a']} vs {m['color_b']} (dist: {m['color_distance']})")
         if len(d["mismatches"]) > 5:
             lines.append(f"    ... and {len(d['mismatches']) - 5} more.")
@@ -1719,40 +1843,30 @@ def skin_check_seams(tolerance: int = 35) -> str:
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_align_seams(seam_name: str = "all", mode: str = "blend") -> str:
-    """
-    Automatically heal and harmonize color continuity along adjacent 3D cube edges.
-    Args:
-        seam_name: Substring matching seam description (e.g. 'Head Front-Right', 'Torso', 'all').
-        mode: 'blend' (smooth average of both edges) or 'copy_a_to_b'.
-    """
-    session.canvas.push_undo()
-    aligned = align_seams(session.canvas, seam_name=seam_name, mode=mode)
-    session.mark_dirty()
+    """Automatically heal and harmonize color continuity along adjacent 3D cube edges."""
+    with session.lock:
+        session.push_undo(action=f"align_seams:{seam_name}")
+        aligned = align_seams(session.canvas, seam_name=seam_name, mode=mode)
+        session.mark_dirty()
     return f"Successfully aligned {aligned} edge pixel(s) across seam(s) matching '{seam_name}' using mode='{mode}'. Live viewer updated."
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_aesthetic_audit(detailed: bool = True) -> str:
-    """
-    Perform a comprehensive pixel art craftsmanship and aesthetic audit on the active working canvas.
-    Evaluates:
-      1. Overall Aesthetic Score (0.0 to 1.0) & Tier (low, medium, high, top_tier).
-      2. Layer 2 Relief Metric (optimal 12-45% 3D accents).
-      3. Color Palette Harmony & Entropy (16-70 harmonious colors, avoids muddy flat fills or bloat).
-      4. Shading Dynamic Range & Depth (variance across key faces).
-      5. Spatial Cluster Coherence (autocorrelation ratio; separates true pixel clusters from TV noise).
-      6. Vectorized Hue Shifting (rewards artistic warm highlights & cool shadow temperature ramps).
-      7. Seam Continuity (continuity across 3D cuboid transitions).
-      8. Pillow shading detection and exact point deductions.
-    Returns structured craftsmanship breakdown with actionable suggestions for elevating the skin to 1.0.
-    """
-    res = compute_aesthetic_score(session.canvas, deduct_defects=True)
+    """Perform a comprehensive 6-metric pixel art craftsmanship and Golden Rules audit."""
+    with session.lock:
+        res = compute_aesthetic_score(session.canvas, deduct_defects=True)
+        model_label = session.canvas.model.upper()
+
     m = res["metrics"]
+    gr = res["golden_rules"]
 
     out = [
         "=== SkinForge Aesthetic Craftsmanship Audit ===",
-        f"Model: {session.canvas.model.upper()} | Overall Score: {res['score']:.2f} / 1.0 [{res['tier'].upper()}] (Base: {res['base_score']:.2f})",
+        f"Model: {model_label} | Overall Score: {res['score']:.2f} / 1.0 [{res['tier'].upper()}] (Base: {res['base_score']:.2f})",
         "",
         "Craftsmanship Radar Metrics:",
         f"  - 3D Relief Depth:       {int(m['relief_3d']*100)}% ({res['layer2_ratio']*100:.1f}% Layer 2 coverage)",
@@ -1761,6 +1875,12 @@ def skin_aesthetic_audit(detailed: bool = True) -> str:
         f"  - Spatial Coherence:     {int(m['spatial_coherence']*100)}% (anti-noise cluster density)",
         f"  - Hue-Shift Dynamics:    {int(m['hue_shifting']*100)}% (color temperature ramps)",
         f"  - Seam Continuity:       {int(m['seam_continuity']*100)}% (edge alignment)",
+        "",
+        "4 Golden Rules Status:",
+        f"  - Rule 1 (Zero Holes):     {'PASS' if gr['rule1_zero_holes']['passed'] else 'FAIL'} ({gr['rule1_zero_holes']['holes']} holes)",
+        f"  - Rule 2 (+0.35 Relief):   {'PASS' if gr['rule2_relief_depth']['passed'] else 'FAIL'} ({gr['rule2_relief_depth']['layer2_pct']}% L2)",
+        f"  - Rule 3 (hat_front 4-7):  {'PASS' if gr['rule3_hat_front']['passed'] else 'FAIL'} ({gr['rule3_hat_front']['violating_pixels']} bad px)",
+        f"  - Rule 4 (hat_top Planks): {'PASS' if gr['rule4_hat_top']['passed'] else 'FAIL'} ({gr['rule4_hat_top']['hat_top_pixels']} px)",
     ]
 
     if res["deductions"]:
@@ -1779,19 +1899,12 @@ def skin_aesthetic_audit(detailed: bool = True) -> str:
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_validate() -> str:
-    """
-    Run full quality and layer discipline audit on the active working canvas.
-    Checks:
-      1. 64x64 dimensions.
-      2. Layer 1 holes: Any non-opaque pixels on base body parts (Rule 1).
-      3. Layer 2 floating profile planes on hat_front rows 4-7 (Rule 3).
-      4. Layer 2 floating isolated crown planks on hat_top (Rule 4).
-      5. Head front/side seam continuity.
-    Returns structured pass/fail report with exact remediation suggestions.
-    """
-    validator = SkinValidator(session.canvas)
-    res = validator.validate_structured()
+    """Run full quality and layer discipline audit on the active working canvas."""
+    with session.lock:
+        validator = SkinValidator(session.canvas)
+        res = validator.validate_structured()
 
     out = [res["report"]]
     if res["suggestions"]:
@@ -1803,53 +1916,50 @@ def skin_validate() -> str:
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_auto_fix(default_skin_color: Optional[str] = None) -> str:
     """
-    Autonomous self-healing tool for common LLM mistakes:
-      1. Plugs all non-opaque holes on Layer 1 using neighbor colors or default_skin_color (Rule 1).
-      2. Wipes out illegal floating cheek pixels on hat_front rows 4-7 (Rule 3).
-      3. Clears isolated floating lines on hat_top (Rule 4).
+    Autonomous self-healing tool for the 4 Golden Rules:
+      1. Rule 1: Plugs all non-opaque holes on Layer 1 using neighbor colors or default_skin_color.
+      2. Rule 2: Ensures Layer 2 is in the optimal +0.35 3D relief range (12–45%).
+      3. Rule 3: Wipes out illegal floating pixels on hat_front rows 4–7.
+      4. Rule 4: Clears isolated floating planks (<20 px) on hat_top.
     """
-    session.canvas.push_undo()
-    healed = session.canvas.heal_layer1_holes(default_color=default_skin_color)
-    sanitized = session.canvas.sanitize_outer_layer()
-    session.mark_dirty()
+    with session.lock:
+        session.push_undo(action="skin_auto_fix")
+        fix_res = auto_fix_skin(session.canvas, default_skin_color=default_skin_color, ensure_relief=True)
+        session.mark_dirty()
 
+    healed = fix_res["healed_layer1_holes"]
+    sanitized = fix_res["sanitized_layer2_pixels"]
     return (
         f"=== Autonomous Self-Healing Report ===\n"
         f"- Healed Layer 1 holes: {healed} pixels made 100% solid (Rule 1 compliant).\n"
-        f"- Sanitized Layer 2: {sanitized} floating profile/crown pixels cleared (Rules 3 & 4 compliant).\n"
-        f"Active canvas is now compliant with Minecraft dual-layer depth rules! Live viewer updated."
+        f"- Sanitized Layer 2: {sanitized} pixels adjusted for +0.35 relief & floating profile/crown rules (Rules 2, 3 & 4 compliant).\n"
+        f"Active canvas is now compliant with all 4 Golden Rules of Minecraft Skin Depth! Live viewer updated."
     )
 
 
 # ============================================================================
-# 6. PALETTES & COLOR ASSISTANT
+# 7. PALETTES & COLOR ASSISTANT
 # ============================================================================
 
 @server.tool()
+@handle_mcp_errors()
 def skin_generate_color_ramp(base_color: str, steps: int = 5) -> str:
-    """
-    Generate a harmonious 5-step shading ramp (deep shadow, shadow, base, highlight, rim highlight)
-    from a single base hex or RGB color.
-    Returns ASCII characters ('_', '#', '=', '+', '~') mapped to exact hex and RGBA values.
-    """
-    try:
-        res = generate_color_ramp(base_color, steps=steps)
-        lines = [f"Color Ramp for Base '{res['base_hex']}':"]
-        for d in res["details"]:
-            lines.append(f"  '{d['char']}': {d['hex']} {d['rgba']} (step {d['step']})")
-        lines.append(f"\nCopyable ASCII Palette Dict:\n{json.dumps(res['palette'])}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error generating color ramp: {str(e)}"
+    """Generate a harmonious 5-step shading ramp from a single base hex or RGB color."""
+    res = generate_color_ramp(base_color, steps=steps)
+    lines = [f"Color Ramp for Base '{res['base_hex']}':"]
+    for d in res["details"]:
+        lines.append(f"  '{d['char']}': {d['hex']} {d['rgba']} (step {d['step']})")
+    lines.append(f"\nCopyable ASCII Palette Dict:\n{json.dumps(res['palette'])}")
+    return "\n".join(lines)
 
 
 @server.tool()
+@handle_mcp_errors()
 def skin_list_palettes() -> str:
-    """
-    List all available built-in color palettes and their theme styles.
-    """
+    """List all available built-in color palettes and their theme styles."""
     return (
         "Available Built-in Palettes:\n"
         "- 'TECHWEAR_CYBERPUNK': Syntren theme (dark obsidian fabrics, neon violet/lavender accents, silver chains, sneakers).\n"
@@ -1860,53 +1970,52 @@ def skin_list_palettes() -> str:
 
 
 # ============================================================================
-# 7. 3D WEB VIEWER INTEGRATION
+# 8. 3D WEB VIEWER INTEGRATION
 # ============================================================================
 
 @server.tool()
+@handle_mcp_errors()
 def viewer_start(port: int = 8080) -> str:
-    """
-    Launch the interactive Three.js 3D WebGL skin viewer in the background.
-    Live auto-reloads automatically whenever 'skin_save' is called.
-    """
-    if session.viewer_process and session.viewer_process.poll() is None:
-        return f"Viewer is already running at: http://localhost:{session.viewer_port}"
+    """Launch the interactive Three.js 3D WebGL skin viewer with SSE real-time push in the background."""
+    with session.lock:
+        if session.viewer_process and session.viewer_process.poll() is None:
+            return f"Viewer is already running at: http://localhost:{session.viewer_port}"
 
-    viewer_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "viewer.py"))
-    if not os.path.exists(viewer_script):
-        viewer_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "viewer.py"))
+        viewer_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "viewer.py"))
+        if not os.path.exists(viewer_script):
+            viewer_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "viewer.py"))
 
-    # If skin file not yet saved, save current canvas to a temporary preview
-    if not session.file_path:
-        default_skin = os.path.abspath("skins/skin_current.png")
-        session.canvas.export_png(default_skin)
-        session.file_path = default_skin
+        if not session.file_path:
+            default_skin = os.path.abspath(os.path.join(PROJECT_ROOT, "skins", "skin_current.png"))
+            session.canvas.export_png(default_skin)
+            session.file_path = default_skin
 
-    session.sync_live()
+        session.sync_live()
 
-    try:
+        env = os.environ.copy()
+        env["SKINFORGE_VIEWER_PORT"] = str(port)
+        env["SKINFORGE_NO_BROWSER"] = "1"
+
         proc = subprocess.Popen(
             [sys.executable, viewer_script],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=os.path.dirname(viewer_script)
+            cwd=os.path.dirname(viewer_script),
+            env=env,
         )
         session.viewer_process = proc
         session.viewer_port = port
         return (
-            f"Started interactive 3D WebGL viewer on http://localhost:{port} (PID {proc.pid}).\n"
-            f"Watching active skin file: '{session.file_path}'.\n"
-            f"User can view walk/run animations, orbit rotate, and right-click pan in their web browser."
+            f"Started interactive 3D WebGL Studio viewer on http://localhost:{port} (PID {proc.pid}).\n"
+            f"SSE Stream active at: http://localhost:{port}/api/events\n"
+            f"Watching active skin file: '{session.file_path}'."
         )
-    except Exception as e:
-        return f"Error starting viewer: {str(e)}"
 
 
 @server.tool()
+@handle_mcp_errors()
 def viewer_status() -> str:
-    """
-    Check the status and URL of the 3D WebGL viewer server.
-    """
+    """Check the status and URL of the 3D WebGL viewer server."""
     is_running = session.viewer_process and session.viewer_process.poll() is None
     if is_running:
         return f"Viewer is RUNNING at http://localhost:{session.viewer_port} (PID {session.viewer_process.pid}). Watching: '{session.file_path}'"
@@ -1914,19 +2023,19 @@ def viewer_status() -> str:
 
 
 @server.tool()
+@handle_mcp_errors()
 def viewer_stop() -> str:
-    """
-    Terminate the background 3D WebGL viewer server process.
-    """
-    if session.viewer_process and session.viewer_process.poll() is None:
-        session.viewer_process.terminate()
-        session.viewer_process = None
-        return "3D WebGL viewer stopped."
+    """Terminate the background 3D WebGL viewer server process."""
+    with session.lock:
+        if session.viewer_process and session.viewer_process.poll() is None:
+            session.viewer_process.terminate()
+            session.viewer_process = None
+            return "3D WebGL viewer stopped."
     return "Viewer was not running."
 
 
 # ============================================================================
-# 8. MCP RESOURCES
+# 9. MCP RESOURCES & PROMPTS
 # ============================================================================
 
 @server.resource("skin://uv-map")
@@ -1934,30 +2043,25 @@ def get_uv_map_resource() -> str:
     """Complete Minecraft 1.8+ 64x64 dual-layer UV coordinate matrix."""
     lines = ["Face Identifier | Layer | Texture Box (u0, v0, u1, v1) | Dimensions (W x H)"]
     for name, (u0, v0, u1, v1) in MINECRAFT_UV_MAP.items():
-        layer = "Outer (Layer 2)" if any(x in name for x in ['hat', 'jacket', 'sleeve', 'pants']) else "Base (Layer 1)"
+        layer = "Outer (Layer 2)" if name in OUTER_PARTS else "Base (Layer 1)"
         lines.append(f"{name:20} | {layer:15} | ({u0:2}, {v0:2}, {u1:2}, {v1:2}) | {u1-u0}x{v1-v0}")
     return "\n".join(lines)
 
 
 @server.resource("skin://layer-rules")
 def get_layer_rules_resource() -> str:
-    """The 4 Golden Rules of Minecraft Skin Depth from instructions.md."""
+    """The 4 Golden Rules of Minecraft Skin Depth."""
     return (
         "THE 4 GOLDEN RULES OF MINECRAFT SKIN DEPTH:\n"
         "-------------------------------------------\n"
         "Rule 1: Layer 1 is 100% Solid (Zero Holes)\n"
-        "  - All 36 Base Layer parts MUST have alpha = 255 on every single pixel.\n"
-        "  - Transparent pixels on Layer 1 render as black empty voids through the skull/torso.\n\n"
+        "  - All 36 Base Layer parts MUST have alpha = 255 on every single pixel.\n\n"
         "Rule 2: Layer 2 is Exclusively for 3D Relief (+0.35 Blocks)\n"
-        "  - Floats +0.35 blocks outside Layer 1.\n"
-        "  - DO NOT duplicate the whole solid body on Layer 2 (causes bloated marshmallow look).\n"
-        "  - Use ONLY for bangs, hood rim, pocket flaps, badges, cuffs, hems.\n\n"
+        "  - Floats +0.35 blocks outside Layer 1 (optimal 12–45% coverage, never >65%).\n\n"
         "Rule 3: The Floating Cardboard Plane Trap (hat_front Profile Bug)\n"
-        "  - On 'hat_front', rows 4 to 7 MUST be 100% transparent across all columns.\n"
-        "  - Bangs belong ONLY on rows 0 to 3. Pixels on rows 4-7 float detached in empty space in 90° profile view.\n\n"
+        "  - On 'hat_front', rows 4 to 7 MUST be 100% transparent across all columns.\n\n"
         "Rule 4: The Floating Plank Trap (hat_top Crown Bug)\n"
-        "  - 'hat_top' must either be solid (hood crown) or 100% transparent.\n"
-        "  - Never leave isolated single stripes (< 20 pixels) hovering 0.5 blocks above the head."
+        "  - 'hat_top' must either be solid (>=20 pixels) or 100% transparent (never isolated stripes < 20 px)."
     )
 
 
@@ -1978,54 +2082,40 @@ def get_session_state_resource() -> str:
     return skin_get_session_info()
 
 
-# ============================================================================
-# 9. MCP PROMPTS
-# ============================================================================
-
 @server.prompt("create-skin")
 def prompt_create_skin() -> List[types.PromptMessage]:
     """Autonomous agent workflow prompt for designing a skin from scratch."""
     instructions = (
-        "You are an expert Minecraft skin artist using SkinForge MCP server.\n\n"
+        "You are an expert Minecraft skin artist using SkinForge MCP server v1.3.0.\n\n"
         "RECOMMENDED WORKFLOW:\n"
         "1. Start by calling 'skin_new(template=\"base_body\", skin_tone=...)' to get a solid, 0-hole Layer 1.\n"
-        "2. Paint the head and face with 'skin_set_part_ascii(\"head_front\", ...)' or presets like 'skin_apply_preset(\"anime_eyes_2x2\")'.\n"
+        "2. Paint the head and face with 'skin_set_part_ascii(\"head_front\", ...)' or presets.\n"
         "3. Design clothing on Layer 1 ('body_front', 'right_arm_front', 'right_leg_front').\n"
-        "4. Mirror limbs with 'skin_mirror_limb(\"right_arm\", \"left_arm\")' and 'skin_mirror_limb(\"right_leg\", \"left_leg\")'.\n"
-        "5. Add 3D relief on Layer 2 (e.g. bangs on 'hat_front' rows 0-3 only, hood on 'hat_top', pocket on 'right_pants_right').\n"
+        "4. Mirror limbs with 'skin_mirror_limb(\"right_arm\", \"left_arm\")'.\n"
+        "5. Add 3D relief on Layer 2 (bangs on 'hat_front' rows 0-3 only, hood on 'hat_top').\n"
         "6. Call 'skin_validate()'. If any warnings appear, call 'skin_auto_fix()'.\n"
-        "7. Call 'skin_render_3d(preset=\"turnaround\")' to visually inspect your design across 4 camera angles.\n"
+        "7. Call 'skin_render_3d(preset=\"turnaround\")' to visually inspect your design.\n"
         "8. Call 'skin_save(file_path=...)' to save the final PNG."
     )
-    return [
-        types.PromptMessage(
-            role="user",
-            content=types.TextContent(type="text", text=instructions)
-        )
-    ]
+    return [types.PromptMessage(role="user", content=types.TextContent(type="text", text=instructions))]
 
 
 @server.prompt("audit-and-fix-skin")
 def prompt_audit_and_fix() -> List[types.PromptMessage]:
     """Workflow prompt for auditing and fixing an existing skin PNG."""
     instructions = (
-        "You are auditing and fixing a Minecraft skin using SkinForge MCP.\n\n"
+        "You are auditing and fixing a Minecraft skin using SkinForge MCP v1.3.0.\n\n"
         "STEPS:\n"
-        "1. Call 'skin_load(file_path=...)' to load the skin.\n"
-        "2. Call 'skin_validate()' to inspect Layer 1 holes, Rule 3 profile bugs, and Rule 4 crown bugs.\n"
-        "3. Call 'skin_auto_fix()' to autonomously patch transparent holes and strip illegal floating cardboard.\n"
-        "4. Call 'skin_render_3d(preset=\"turnaround\")' and 'skin_render_3d(preset=\"left_profile\")' to visually confirm the fixes.\n"
+        "1. Call 'skin_load(file_path=...)' to load the skin (64x32 legacy skins are auto-converted to 64x64).\n"
+        "2. Call 'skin_validate()' and 'skin_aesthetic_audit()' to inspect the 4 Golden Rules and 6 metrics.\n"
+        "3. Call 'skin_auto_fix()' to autonomously heal Rule 1, Rule 2, Rule 3, and Rule 4.\n"
+        "4. Call 'skin_render_3d(preset=\"turnaround\")' to visually confirm the fixes.\n"
         "5. Save with 'skin_save()'."
     )
-    return [
-        types.PromptMessage(
-            role="user",
-            content=types.TextContent(type="text", text=instructions)
-        )
-    ]
+    return [types.PromptMessage(role="user", content=types.TextContent(type="text", text=instructions))]
 
 
-def main():
+def main() -> None:
     """Run the SkinForge MCP Server over stdio."""
     server.run("stdio")
 

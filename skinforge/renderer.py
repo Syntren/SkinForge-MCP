@@ -220,10 +220,11 @@ class Minecraft3DRenderer:
 
 
 def _extract_skin_arr(skin_source):
-    """Extract (64, 64, 4) numpy array from file path, SkinCanvas, PIL Image, or numpy array."""
-    if isinstance(skin_source, str):
-        im = Image.open(skin_source).convert("RGBA")
-        return np.array(im)
+    """Extract (64, 64, 4) numpy array from file path, SkinCanvas, PIL Image, or numpy array (auto-converting 64x32)."""
+    from .core.uv import load_skin_array
+    if isinstance(skin_source, (str, bytes, Image.Image, np.ndarray)):
+        arr, _ = load_skin_array(skin_source)
+        return arr
     elif hasattr(skin_source, "to_array"):
         return skin_source.to_array()
     elif hasattr(skin_source, "parts"):

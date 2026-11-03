@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SkinForge Studio v1.3.0 — Real-Time 3D WebGL Skin Inspector</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/skinview3d.bundle.js"></script>
+    <script>
+        if (typeof skinview3d === "undefined") {
+            document.write('<script src="https://cdn.jsdelivr.net/npm/skinview3d@3.0.1/bundles/skinview3d.bundle.js"><\/script>');
+        }
+    </script>
+</head>
+<body>
+    <!-- Main 3D WebGL Viewport -->
+    <div id="canvas-container">
+        <canvas id="skin_container"></canvas>
+
+        <!-- Top-Left Studio Status & Camera HUD -->
+        <div class="hud-top-bar">
+            <div class="sse-pill" id="sse-status-pill" title="Real-time Server-Sent Events stream">
+                <span class="pulse-dot" id="live-dot"></span>
+                <span id="live-text">SSE Live Sync</span>
+            </div>
+            <div class="hud-badge" id="hud-model-badge">MODEL: CLASSIC 4PX</div>
+            <div class="hud-badge" id="hud-colors-badge">🎨 0 COLORS</div>
+            <div class="hud-cam-group">
+                <button class="hud-btn" onclick="setCameraView('front_3d')" title="3/4 Perspective">3/4</button>
+                <button class="hud-btn" onclick="setCameraView('front')" title="Front Ortho">Front</button>
+                <button class="hud-btn" onclick="setCameraView('back')" title="Back View">Back</button>
+                <button class="hud-btn" onclick="setCameraView('left')" title="Left Profile (Rule 3 Check)">Left</button>
+                <button class="hud-btn" onclick="setCameraView('right')" title="Right Profile">Right</button>
+            </div>
+        </div>
+
+        <!-- Bottom-Left Interactive 2D UV Map Preview (64x64) -->
+        <div class="uv-dock" id="uv-dock">
+            <div class="uv-dock-header">
+                <span class="uv-dock-title">2D UV MAP (64×64)</span>
+                <label class="uv-grid-toggle">
+                    <input type="checkbox" id="tog-uv-zones" checked onchange="drawUVOverlay()">
+                    <span>Zones</span>
+                </label>
+            </div>
+            <div class="uv-canvas-wrapper" id="uv-canvas-wrapper">
+                <canvas id="uv-preview-canvas" width="64" height="64"></canvas>
+                <canvas id="uv-overlay-canvas" width="256" height="256"></canvas>
+            </div>
+            <div class="uv-inspector-bar" id="uv-inspector-bar">
+                <span class="uv-swatch" id="uv-swatch"></span>
+                <div class="uv-inspector-meta">
+                    <div class="uv-part-name" id="uv-part-name">Hover over UV map</div>
+                    <div class="uv-coord-hex" id="uv-coord-hex">X: —, Y: — | #------</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom-Right Navigation Hint -->
+        <div class="hud-nav-hint">
+            Left Drag: Orbit &nbsp;•&nbsp; Right Drag: Pan &nbsp;•&nbsp; Scroll: Zoom
+        </div>
+    </div>
+
+    <!-- Right Studio Sidebar -->
+    <aside id="ui-panel">
+        <header class="studio-header">
+            <div class="brand-row">
+                <div class="brand-title">Skin<span>Forge</span> Studio</div>
+                <span class="version-badge">v1.3.0</span>
+            </div>
+            <div class="export-row">
+                <button class="btn-export primary" onclick="exportSkinPNG()" title="Download 64x64 RGBA Skin PNG">
+                    ⬇ Export Skin PNG
+                </button>
+                <button class="btn-export secondary" onclick="screenshot3DPNG()" title="Capture 3D Viewport Screenshot PNG">
+                    📸 Screenshot 3D PNG
+                </button>
+            </div>
+        </header>
+
+        <!-- Studio Mode Tabs -->
+        <div class="tabs-bar">
+            <button id="tab-btn-studio" class="tab-btn active" onclick="switchTab('studio')">🎛️ Studio &amp; Audit</button>
+            <button id="tab-btn-lego" class="tab-btn" onclick="switchTab('lego')">🧩 Lego Constructor</button>
+        </div>
+
+        <!-- TAB 1: STUDIO CONTROLS, LAYER MATRIX & REAL-TIME AUDIT -->
+        <div id="tab-studio-content" class="tab-content">
+
+            <!-- 1. Animations & Speed -->
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">Animations &amp; Motion</span>
+                    <button id="btn-spin" class="mini-pill-btn" onclick="toggleSpin()">🔄 Turntable</button>
+                </div>
+                <div class="anim-grid">
+                    <button id="btn-anim-idle" class="anim-btn active" onclick="setAnimation('idle')">🧍 Idle</button>
+                    <button id="btn-anim-walk" class="anim-btn" onclick="setAnimation('walk')">🚶 Walk</button>
+                    <button id="btn-anim-run" class="anim-btn" onclick="setAnimation('run')">🏃 Run</button>
+                    <button id="btn-anim-wave" class="anim-btn" onclick="setAnimation('wave')">👋 Wave</button>
+                    <button id="btn-anim-fly" class="anim-btn" onclick="setAnimation('fly')">🦅 Fly</button>
+                    <button id="btn-anim-pause" class="anim-btn" onclick="setAnimation('pause')">⏸️ Pause</button>
+                </div>
+                <div class="slider-row">
+                    <label for="anim-speed">Speed</label>
+                    <input type="range" id="anim-speed" min="0.1" max="2.5" step="0.1" value="1.0" oninput="updateAnimSpeed(this.value)">
+                    <span class="slider-val" id="anim-speed-val">1.0×</span>
+                </div>
+            </section>
+
+            <!-- 2. Lighting Presets -->
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">Lighting Preset</span>
+                </div>
+                <div class="light-grid">
+                    <button id="btn-light-studio" class="light-btn active" onclick="setLighting('studio')">💡 Studio</button>
+                    <button id="btn-light-daylight" class="light-btn" onclick="setLighting('daylight')">☀️ Daylight</button>
+                    <button id="btn-light-unlit" class="light-btn" onclick="setLighting('unlit')" title="Pure flat unshaded pixel colors">🎨 Unlit Flat Pixel-Art</button>
+                </div>
+            </section>
+
+            <!-- 3. Layer Toggle Matrix (Head, Torso, Arms, Legs x Base / Outer) -->
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">Layer Toggle Matrix</span>
+                    <div class="matrix-quick-btns">
+                        <button class="mini-pill-btn" onclick="setAllLayers(true, true)">All</button>
+                        <button class="mini-pill-btn" onclick="setAllLayers(true, false)">L1 Only</button>
+                        <button class="mini-pill-btn" onclick="setAllLayers(false, true)">L2 Only</button>
+                    </div>
+                </div>
+                <table class="layer-matrix">
+                    <thead>
+                        <tr>
+                            <th>Body Region</th>
+                            <th>Base (Layer 1)</th>
+                            <th>Outer (Layer 2)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Head / Hat</td>
+                            <td><input type="checkbox" id="mat-head-base" checked onchange="applyLayerMatrix()"></td>
+                            <td><input type="checkbox" id="mat-head-outer" checked onchange="applyLayerMatrix()"></td>
+                        </tr>
+                        <tr>
+                            <td>Torso / Jacket</td>
+                            <td><input type="checkbox" id="mat-torso-base" checked onchange="applyLayerMatrix()"></td>
+                            <td><input type="checkbox" id="mat-torso-outer" checked onchange="applyLayerMatrix()"></td>
+                        </tr>
+                        <tr>
+                            <td>Arms / Sleeves</td>
+                            <td><input type="checkbox" id="mat-arms-base" checked onchange="applyLayerMatrix()"></td>
+                            <td><input type="checkbox" id="mat-arms-outer" checked onchange="applyLayerMatrix()"></td>
+                        </tr>
+                        <tr>
+                            <td>Legs / Pants</td>
+                            <td><input type="checkbox" id="mat-legs-base" checked onchange="applyLayerMatrix()"></td>
+                            <td><input type="checkbox" id="mat-legs-outer" checked onchange="applyLayerMatrix()"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- 4. Real-Time Aesthetic Engine v2 (6 Metrics + Color Count) -->
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">Aesthetic Score (6 Metrics)</span>
+                    <span class="tier-badge" id="audit-tier-badge">TOP_TIER</span>
+                </div>
+                <div class="score-hero-row">
+                    <div class="score-big" id="audit-score-val">0.00 <small>/ 1.00</small></div>
+                    <div class="score-sub-stats">
+                        <div id="audit-colors-count">Colors: —</div>
+                        <div id="audit-l2-density">L2 Relief: —%</div>
+                    </div>
+                </div>
+                <div class="metrics-list">
+                    <div class="metric-item">
+                        <div class="metric-label-row"><span>3D Relief Depth</span><span id="m-val-relief">0%</span></div>
+                        <div class="metric-bar-bg"><div class="metric-bar-fill" id="m-bar-relief"></div></div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label-row"><span>Palette Harmony</span><span id="m-val-palette">0%</span></div>
+                        <div class="metric-bar-bg"><div class="metric-bar-fill" id="m-bar-palette"></div></div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label-row"><span>Shading Depth</span><span id="m-val-shading">0%</span></div>
+                        <div class="metric-bar-bg"><div class="metric-bar-fill" id="m-bar-shading"></div></div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label-row"><span>Spatial Cluster Coherence</span><span id="m-val-coherence">0%</span></div>
+                        <div class="metric-bar-bg"><div class="metric-bar-fill" id="m-bar-coherence"></div></div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label-row"><span>Vectorized Hue Shifting</span><span id="m-val-hue">0%</span></div>
+                        <div class="metric-bar-bg"><div class="metric-bar-fill" id="m-bar-hue"></div></div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label-row"><span>Seam Continuity</span><span id="m-val-seams">0%</span></div>
+                        <div class="metric-bar-bg"><div class="metric-bar-fill" id="m-bar-seams"></div></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 5. 4 Golden Rules Live Status -->
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">4 Golden Rules Status</span>
+                    <button class="mini-pill-btn accent" onclick="triggerAutoFix()" title="Heal holes and sanitize outer layer">✨ Auto-Fix</button>
+                </div>
+                <div class="rules-list">
+                    <div class="rule-row" id="rule-row-1">
+                        <span class="rule-name">1. Zero Holes (Base 100% Solid)</span>
+                        <span class="rule-badge pass" id="rule-badge-1">PASS</span>
+                    </div>
+                    <div class="rule-row" id="rule-row-2">
+                        <span class="rule-name">2. +0.35 Relief Depth (12–45%)</span>
+                        <span class="rule-badge pass" id="rule-badge-2">PASS</span>
+                    </div>
+                    <div class="rule-row" id="rule-row-3">
+                        <span class="rule-name">3. hat_front Rows 4–7 Transparent</span>
+                        <span class="rule-badge pass" id="rule-badge-3">PASS</span>
+                    </div>
+                    <div class="rule-row" id="rule-row-4">
+                        <span class="rule-name">4. hat_top No Floating Planks</span>
+                        <span class="rule-badge pass" id="rule-badge-4">PASS</span>
+                    </div>
+                </div>
+                <div class="sync-footer-note" id="last-update">Waiting for stream...</div>
+            </section>
+        </div>
+
+        <!-- TAB 2: LEGO CONSTRUCTOR -->
+        <div id="tab-lego-content" class="tab-content" style="display: none;">
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">💇 Hair / Hairstyle</span>
+                    <span id="sel-hair" class="mod-selected-tag">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-hair" class="mod-input" placeholder="e.g. cyberpunk bangs, ponytail" onkeydown="if(event.key==='Enter') searchModule('hair')">
+                    <button class="mod-btn" onclick="searchModule('hair')">Find</button>
+                </div>
+                <div id="results-hair" class="mod-results"></div>
+            </section>
+
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">👀 Face / Eyes</span>
+                    <span id="sel-face" class="mod-selected-tag">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-face" class="mod-input" placeholder="e.g. anime violet eyes, visor" onkeydown="if(event.key==='Enter') searchModule('face')">
+                    <button class="mod-btn" onclick="searchModule('face')">Find</button>
+                </div>
+                <div id="results-face" class="mod-results"></div>
+            </section>
+
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">👔 Torso / Jacket</span>
+                    <span id="sel-torso" class="mod-selected-tag">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-torso" class="mod-input" placeholder="e.g. techwear hoodie, tuxedo" onkeydown="if(event.key==='Enter') searchModule('torso')">
+                    <button class="mod-btn" onclick="searchModule('torso')">Find</button>
+                </div>
+                <div id="results-torso" class="mod-results"></div>
+            </section>
+
+            <section class="studio-card">
+                <div class="card-header">
+                    <span class="card-title">👖 Legs / Pants</span>
+                    <span id="sel-legs" class="mod-selected-tag">Default</span>
+                </div>
+                <div class="mod-input-row">
+                    <input type="text" id="input-legs" class="mod-input" placeholder="e.g. cargo pants, sneakers" onkeydown="if(event.key==='Enter') searchModule('legs')">
+                    <button class="mod-btn" onclick="searchModule('legs')">Find</button>
+                </div>
+                <div id="results-legs" class="mod-results"></div>
+            </section>
+
+            <button class="btn-assemble" onclick="assembleCharacter()">
+                ⚡ Assemble &amp; Harmonize Seams
+            </button>
+        </div>
+    </aside>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

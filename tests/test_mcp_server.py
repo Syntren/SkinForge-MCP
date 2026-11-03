@@ -424,6 +424,51 @@ class TestSkinForgeMCPServer(unittest.TestCase):
         self.assertIn("Aesthetic Score", info_text)
 
 
+
+    def test_v13_history_legacy_load_and_rag_pack_tools(self):
+        import json
+        import tempfile
+        import shutil
+        import numpy as np
+        from PIL import Image
+
+        tmp_dir = tempfile.mkdtemp(prefix="mcp_v13_")
+        try:
+            # 1. Test skin_history tool
+            self.call("skin_new", {"template": "base_body", "skin_tone": "fair"})
+            self.call("skin_set_pixel", {"part_name": "head_front", "x": 1, "y": 1, "color": "#abcdef"})
+            hist_res = self.call("skin_history", {})
+            hist_data = json.loads(hist_res.content[0].text)
+            self.assertEqual(hist_data["status"], "success")
+            self.assertGreaterEqual(hist_data["undo_count"], 1)
+            self.assertEqual(hist_data["max_states"], 30)
+
+            # 2. Test loading legacy 64x32 skin via skin_load tool
+            legacy_arr = np.zeros((32, 64, 4), dtype=np.uint8)
+            legacy_arr[:, :, :3] = 120
+            legacy_arr[:, :, 3] = 255
+            legacy_path = os.path.join(tmp_dir, "legacy_32.png")
+            Image.fromarray(legacy_arr, "RGBA").save(legacy_path)
+
+            load_res = self.call("skin_load", {"file_path": legacy_path})
+            self.assertIn("Auto-converted from legacy 64x32 -> 64x64", load_res.content[0].text)
+            self.assertEqual(session.canvas.to_array().shape, (64, 64, 4))
+
+            # 3. Test skin_rag_pack MCP tool
+            out_db = os.path.join(tmp_dir, "packed_mcp.sfpack")
+            pack_res = self.call("skin_rag_pack", {
+                "source_path": legacy_path,
+                "output_path": out_db,
+                "overwrite": True
+            })
+            pack_data = json.loads(pack_res.content[0].text)
+            self.assertEqual(pack_data["status"], "success")
+            self.assertEqual(pack_data["packed_count"], 1)
+            self.assertEqual(pack_data["converted_legacy_64x32"], 1)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
 
