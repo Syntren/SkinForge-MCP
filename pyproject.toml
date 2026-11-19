@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skinforge-mcp"
-version = "1.3.0"
-description = "Autonomous Model Context Protocol (MCP) server & procedural engine for Minecraft skin authoring, validation, RAG packing, and real-time SSE 3D WebGL preview."
+version = "2.0.0"
+description = "AI-first Model Context Protocol (MCP) server & procedural pixel-art engine for Minecraft skin authoring, hue-shifted auto-shading, semantic region painting, multimodal self-critique, RAG packing, and real-time SSE 3D WebGL preview."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Syntren"}
 ]
-keywords = ["minecraft", "skin", "mcp", "ai-agent", "model-context-protocol", "threejs", "webgl", "pixel-art"]
+keywords = ["minecraft", "skin", "mcp", "ai-agent", "model-context-protocol", "threejs", "webgl", "pixel-art", "shading"]
 dependencies = [
     "numpy>=1.22.0",
     "pillow>=9.0.0",

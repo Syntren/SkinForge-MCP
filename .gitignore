@@ -16,9 +16,10 @@ venv/
 ENV/
 env/
 
-# Editor & OS
+# Editor, IDE & Agent Worktrees
 .vscode/
 .idea/
+.kilo/
 .DS_Store
 *.swp
 *.swo
@@ -42,6 +43,7 @@ node_modules/
 # Database & datasets
 *.db
 *.db-journal
+*.sfpack
 data/
 *.sqlite
 *.sqlite3

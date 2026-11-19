@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-SkinForge CLI Entry Point (v1.3.0).
-Command-line interface for rendering, inspecting, packing RAG databases, and managing Minecraft skins.
+SkinForge CLI Entry Point (v2.0.0).
+Command-line interface for rendering, shading, inspecting, packing RAG databases, and managing Minecraft skins.
 """
 
 import argparse
@@ -9,17 +9,19 @@ import json
 import os
 import sys
 
-__version__ = "1.3.0"
+__version__ = "2.0.0"
 
 # Add package root to sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from skinforge import (
+    SHADING_STYLES,
     SkinCanvas,
     SkinValidator,
     __version__ as sf_version,
     align_seams,
     assemble_skin,
+    auto_shade_skin,
     check_seams,
     compute_aesthetic_score,
     convert_skin_model,
@@ -34,7 +36,7 @@ from skinforge import (
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="skinforge",
-        description=f"SkinForge v{sf_version}: Advanced Minecraft Skin Creation, Quality Audit, RAG Packing & 3D Visualization",
+        description=f"SkinForge v{sf_version}: AI-First Minecraft Skin Creation, Hue-Shifted Shading, Quality Audit, RAG Packing & 3D Visualization",
     )
     parser.add_argument("--version", action="version", version=f"skinforge {sf_version}")
     subparsers = parser.add_subparsers(dest="command")
@@ -56,6 +58,16 @@ def main() -> None:
     # Inspect command
     p_inspect = subparsers.add_parser("inspect", help="Inspect and audit skin layers and geometry")
     p_inspect.add_argument("skin", help="Path to input 64x64 (or 64x32) skin PNG")
+
+    # Shade command (New in v2.0.0)
+    p_shade = subparsers.add_parser("shade", help="Apply procedural hue-shifted pixel-art auto-shading")
+    p_shade.add_argument("skin", help="Path to input 64x64 (or 64x32) skin PNG")
+    p_shade.add_argument("--target", default="base", help="UV part name or group (all, base, outer, head, torso, limbs, etc.)")
+    p_shade.add_argument("--style", choices=list(SHADING_STYLES), default="directional", help="Shading style")
+    p_shade.add_argument("--strength", type=float, default=0.35, help="Shading intensity (0.05-0.85)")
+    p_shade.add_argument("--hue-shift", type=float, default=18.0, help="Hue-shift temperature angle in degrees (0-45)")
+    p_shade.add_argument("--dither", action="store_true", help="Enable ordered Bayer 2x2 pixel-art dithering")
+    p_shade.add_argument("--out", default=None, help="Output PNG path (overwrites input if omitted)")
 
     # Seams command
     p_seams = subparsers.add_parser("seams", help="Audit or align 3D cube edge wrap-around seams")
@@ -108,7 +120,7 @@ def main() -> None:
     p_part_search.add_argument("--limit", type=int, default=5, help="Maximum results to return")
     p_part_search.add_argument("--min-quality", choices=["all", "low", "medium", "high"], default="medium", help="Minimum aesthetic quality tier")
 
-    # RAG Pack command (New in v1.3.0)
+    # RAG Pack command
     p_pack = subparsers.add_parser(
         "rag-pack",
         help="Pack a folder of .png skins or a .zip archive into a portable SQLite FTS5 + CIELAB float16 database (.sfpack / .db)",
@@ -139,6 +151,24 @@ def main() -> None:
         validator = SkinValidator(args.skin)
         valid, report = validator.validate()
         print(report)
+
+    elif args.command == "shade":
+        canvas = SkinCanvas()
+        canvas.load_png(args.skin)
+        res = auto_shade_skin(
+            canvas,
+            target=args.target,
+            style=args.style,
+            strength=args.strength,
+            hue_shift_deg=args.hue_shift,
+            dither=args.dither,
+        )
+        out_p = args.out or args.skin
+        canvas.export_png(out_p)
+        print(
+            f"[+] Auto-shaded '{res['target']}' ({res['style']}, {res['shaded_pixels']} px across "
+            f"{res['shaded_parts_count']} parts) -> saved to '{out_p}'"
+        )
 
     elif args.command == "seams":
         canvas = SkinCanvas()

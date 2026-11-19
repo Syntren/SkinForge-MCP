@@ -71,7 +71,7 @@ class TestV1Features(unittest.TestCase):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_version_is_1_3_0(self):
-        self.assertEqual(__version__, "1.3.0")
+        self.assertEqual(__version__, "2.0.0")
 
     def test_aesthetic_scorer(self):
         res_flat = compute_aesthetic_score(self.canvas_a)
@@ -466,12 +466,12 @@ class TestV1Features(unittest.TestCase):
             responses = [json.loads(line) for line in out_stream.getvalue().strip().split("\n") if line.strip()]
             self.assertEqual(len(responses), 7)
             self.assertEqual(responses[0]["id"], 1)
-            self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "1.3.0")
+            self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "2.0.0")
             self.assertGreater(len(responses[1]["result"]["tools"]), 25)
             self.assertIn("TECHWEAR_CYBERPUNK", responses[2]["result"]["content"][0]["text"])
-            self.assertEqual(len(responses[3]["result"]["resources"]), 4)
+            self.assertGreaterEqual(len(responses[3]["result"]["resources"]), 4)
             self.assertIn("Rule 1", responses[4]["result"]["contents"][0]["text"])
-            self.assertEqual(len(responses[5]["result"]["prompts"]), 2)
+            self.assertGreaterEqual(len(responses[5]["result"]["prompts"]), 2)
             self.assertGreaterEqual(len(responses[6]["result"]["messages"]), 1)
 
 

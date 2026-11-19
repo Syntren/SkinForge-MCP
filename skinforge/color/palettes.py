@@ -1,5 +1,5 @@
 """
-Predefined color palettes and procedural color ramp utilities for SkinForge.
+Predefined color palettes, hue-shifted color ramps, and color harmony generators for SkinForge (v2.0.0).
 """
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Union
 import numpy as np
 from ..ascii_codec import normalize_color, rgba_to_hex
+from .spaces import hsv_to_rgb, rgb_to_hsv
 
 # Techwear Cyberpunk (Syntren Theme)
 TECHWEAR_CYBERPUNK: Dict[str, List[int]] = {
@@ -82,6 +83,48 @@ FANTASY_KNIGHT: Dict[str, List[int]] = {
     "g": [250, 205, 75, 255],
 }
 
+# Cyber Ninja Palette (v2.0.0)
+CYBER_NINJA: Dict[str, List[int]] = {
+    ".": [0, 0, 0, 0],
+    "_": [12, 16, 24, 255],
+    "#": [22, 28, 40, 255],
+    "=": [36, 44, 62, 255],
+    "+": [56, 68, 92, 255],
+    "r": [175, 28, 52, 255],
+    "R": [230, 52, 78, 255],
+    "c": [0, 185, 215, 255],
+    "C": [95, 238, 255, 255],
+    "w": [235, 242, 250, 255],
+}
+
+# Cozy Pastel Palette (v2.0.0)
+COZY_PASTEL: Dict[str, List[int]] = {
+    ".": [0, 0, 0, 0],
+    "p": [242, 188, 204, 255],
+    "P": [216, 148, 174, 255],
+    "m": [178, 224, 212, 255],
+    "M": [134, 192, 182, 255],
+    "c": [250, 240, 226, 255],
+    "C": [228, 212, 192, 255],
+    "b": [122, 92, 82, 255],
+    "B": [86, 62, 58, 255],
+}
+
+PALETTE_REGISTRY: Dict[str, Dict[str, List[int]]] = {
+    "TECHWEAR_CYBERPUNK": TECHWEAR_CYBERPUNK,
+    "ANIME_SKIN": ANIME_SKIN,
+    "CASUAL_STREETWEAR": CASUAL_STREETWEAR,
+    "FANTASY_KNIGHT": FANTASY_KNIGHT,
+    "CYBER_NINJA": CYBER_NINJA,
+    "COZY_PASTEL": COZY_PASTEL,
+}
+
+
+def _hsv_single_to_rgba(h: float, s: float, v: float) -> List[int]:
+    arr = np.array([[[h % 360.0, np.clip(s, 0.0, 1.0), np.clip(v, 0.0, 1.0)]]], dtype=np.float64)
+    rgb = hsv_to_rgb(arr)[0, 0]
+    return [int(rgb[0]), int(rgb[1]), int(rgb[2]), 255]
+
 
 def generate_color_ramp(base_color: Union[str, list, tuple, np.ndarray], steps: int = 5) -> Dict[str, Any]:
     """
@@ -121,4 +164,88 @@ def generate_color_ramp(base_color: Union[str, list, tuple, np.ndarray], steps: 
         "palette": ramp_palette,
         "details": ramp_details,
         "base_hex": rgba_to_hex(base_rgba),
+    }
+
+
+def generate_harmonious_palette(
+    seed_color: Union[str, list, tuple, np.ndarray],
+    harmony: str = "split_complementary",
+) -> Dict[str, Any]:
+    """
+    Generate a complete, ready-to-use Minecraft character palette from a single seed color.
+    Computes HSV color theory harmonies ('analogous', 'complementary', 'split_complementary',
+    'triadic', 'monochromatic', 'cyberpunk') with full hue-shifted shadow/highlight ramps.
+    """
+    harmony = harmony.lower().strip()
+    seed_rgba = normalize_color(seed_color)
+    hsv = rgb_to_hsv(np.array([[seed_rgba[:3]]], dtype=np.uint8))[0, 0]
+    h0, s0, v0 = float(hsv[0]), float(hsv[1]), float(hsv[2])
+
+    if harmony == "analogous":
+        h_sec, h_acc = (h0 + 28.0) % 360.0, (h0 - 28.0) % 360.0
+    elif harmony == "complementary":
+        h_sec, h_acc = (h0 + 18.0) % 360.0, (h0 + 180.0) % 360.0
+    elif harmony == "split_complementary":
+        h_sec, h_acc = (h0 + 150.0) % 360.0, (h0 + 210.0) % 360.0
+    elif harmony == "triadic":
+        h_sec, h_acc = (h0 + 120.0) % 360.0, (h0 + 240.0) % 360.0
+    elif harmony == "monochromatic":
+        h_sec, h_acc = h0, (h0 + 10.0) % 360.0
+    elif harmony == "cyberpunk":
+        h_sec, h_acc = (h0 + 20.0) % 360.0, (h0 + 165.0) % 360.0
+    else:
+        raise ValueError(
+            f"Unknown harmony '{harmony}'. Supported: analogous, complementary, "
+            "split_complementary, triadic, monochromatic, cyberpunk."
+        )
+
+    primary = list(seed_rgba)
+    primary_shadow = _hsv_single_to_rgba(h0 - 14.0, min(1.0, s0 * 1.15 + 0.05), max(0.08, v0 * 0.68))
+    primary_deep = _hsv_single_to_rgba(h0 - 24.0, min(1.0, s0 * 1.25 + 0.08), max(0.05, v0 * 0.45))
+    primary_hi = _hsv_single_to_rgba(h0 + 12.0, max(0.05, s0 * 0.85), min(1.0, v0 * 1.24 + 0.06))
+
+    if harmony == "cyberpunk":
+        secondary = _hsv_single_to_rgba(h_sec, max(0.15, s0 * 0.55), max(0.10, min(0.28, v0 * 0.65)))
+        accent = _hsv_single_to_rgba(h_acc, 0.88, 0.96)
+    else:
+        secondary = _hsv_single_to_rgba(h_sec, np.clip(s0 * 0.80, 0.12, 0.85), np.clip(v0 * 0.82, 0.14, 0.88))
+        accent = _hsv_single_to_rgba(h_acc, np.clip(max(s0, 0.65), 0.50, 0.95), np.clip(max(v0, 0.78), 0.65, 0.98))
+
+    accent_shadow = _hsv_single_to_rgba(h_acc - 16.0, 0.85, 0.58)
+    trim = _hsv_single_to_rgba(h0 + 8.0, 0.08, 0.95)
+
+    roles = {
+        "primary_deep": rgba_to_hex(primary_deep),
+        "primary_shadow": rgba_to_hex(primary_shadow),
+        "primary": rgba_to_hex(primary),
+        "primary_highlight": rgba_to_hex(primary_hi),
+        "secondary": rgba_to_hex(secondary),
+        "accent_shadow": rgba_to_hex(accent_shadow),
+        "accent": rgba_to_hex(accent),
+        "trim": rgba_to_hex(trim),
+    }
+
+    ascii_palette = {
+        ".": "#00000000",
+        "_": roles["primary_deep"],
+        "#": roles["primary_shadow"],
+        "=": roles["primary"],
+        "+": roles["primary_highlight"],
+        "s": roles["secondary"],
+        "a": roles["accent_shadow"],
+        "A": roles["accent"],
+        "T": roles["trim"],
+    }
+
+    return {
+        "seed_hex": rgba_to_hex(seed_rgba),
+        "harmony": harmony,
+        "roles": roles,
+        "outfit_args": {
+            "primary_color": roles["primary"],
+            "secondary_color": roles["secondary"],
+            "accent_color": roles["accent"],
+            "trim_color": roles["trim"],
+        },
+        "ascii_palette": ascii_palette,
     }

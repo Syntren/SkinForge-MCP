@@ -1,49 +1,62 @@
-# SkinForge MCP 🎨🔨 (v1.3.0)
+# SkinForge MCP 🎨🔨 (v2.0.0)
 
-**Autonomous Model Context Protocol (MCP) Server, Procedural Pixel-Art Engine, Portable RAG Packer & Real-Time SSE 3D WebGL Studio for Minecraft Skins.**
+**AI-First Model Context Protocol (MCP) Server, Procedural Hue-Shifted Pixel-Art Engine, Semantic Region Painter, Multimodal Self-Critique Loop, Portable RAG Packer & Real-Time SSE 3D WebGL Studio for Minecraft Skins.**
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/Syntren/SkinForge-MCP/releases)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/Syntren/SkinForge-MCP/releases)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0%20Compliant-purple.svg)](https://modelcontextprotocol.io/)
-[![Tools](https://img.shields.io/badge/MCP%20Tools-37%20Native%20Tools-brightgreen.svg)]()
+[![Tools](https://img.shields.io/badge/MCP%20Tools-63%20Native%20Tools-brightgreen.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-100%25%20Passing-success.svg)]()
 [![WebGL](https://img.shields.io/badge/Studio-Three.js%20WebGL%20%2B%20SSE-orange.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-SkinForge is an all-in-one professional architecture designed for both **human skin artists** and **autonomous AI/LLM coding agents** (Gemini, Claude, GPT-4o, Cursor, Windsurf) to create, sample, inspect, edit, audit, pack, search, and visually verify Minecraft skins with true 3D dual-layer depth.
+SkinForge is built specifically so **autonomous AI/LLM coding agents** (Claude, Gemini, GPT-4o, Cursor, Windsurf, Kilo Code) and **human pixel artists** can design, shade, edit, inspect, audit, and visually verify top-tier Minecraft 64×64 skins (Classic 4px Steve & Slim 3px Alex, plus automatic 64×32 legacy conversion) in minimal tool round-trips.
 
 ---
 
-## 🚀 What's New in v1.3.0
+## 🚀 What's New in v2.0.0 (AI-First Architecture & Pixel-Art Craftsmanship)
 
-1. **Core Architectural Refactoring (`skinforge/core/`)**:
-   - **Single Source of Truth for UV (`skinforge/core/uv.py`)**: Strictly typed registry of all **72 UV zones** (36 Base Layer + 36 Outer Overlay zones) for both `classic` (Steve 4px) and `slim` (Alex 3px) player models, plus coordinate-to-zone hover lookup (`lookup_uv_coord`).
-   - **Automatic Legacy `64x32` → `64x64` Conversion**: Loading any pre-1.8 `64x32` skin automatically converts it to modern `64x64` format with mirrored left limbs and 100% solid Base Layer opacity.
-   - **Thread-Safe Session & Atomic PNG I/O (`skinforge/core/session.py`)**: `RLock`-protected session state with 30-step `undo_stack` / `redo_stack`, new `skin_history` MCP tool, and atomic `.tmp` + `os.replace()` PNG writes so `viewer.py` never reads partial textures.
+### 1. Modular MCP Architecture (`skinforge/mcp/`)
+The 2,125-line monolithic `mcp_server.py` has been decomposed into a clean, domain-driven package while preserving **100% backward compatibility**:
+- `skinforge/mcp/protocol.py` — Unified `MCPServer` (official `mcp` SDK + zero-dependency JSON-RPC 2.0 stdio fallback) + **fuzzy `"Did you mean...?"` error suggestions** (`difflib`) for mistyped UV part names and tool names.
+- `skinforge/mcp/schemas.py` — Strict Pydantic v2 validation schemas.
+- `skinforge/mcp/tools_session.py`, `tools_editing.py`, `tools_design.py`, `tools_audit.py`, `tools_rag.py`, `resources.py`.
 
-2. **Vectorized Color Engine (`skinforge/color/`)**:
-   - Pure NumPy vectorized conversions across `RGB <-> HSV`, `RGB <-> HSL`, and perceptual `RGB <-> CIELAB` (CIE D65).
-   - Strict exclusion of transparent pixels (`alpha == 0`) across all palette, shading, coherence, and hue-shift calculations.
-   - Zero division-by-zero risks (`np.divide(..., where=...)`) and strict `uint8` overflow clamping (`np.clip(..., 0, 255).astype(np.uint8)`).
+### 2. Procedural Hue-Shifted Auto-Shading Engine (`skinforge/shading.py` → `skin_auto_shade`)
+Solves the #1 LLM skin-authoring flaw (flat, plastic solid colors):
+- 6 lighting & material styles: `directional`, `ambient_occlusion`, `cylindrical`, `fabric_folds`, `hair_strands`, and `metallic`.
+- Real **HSV/temperature hue-shifting** (cooler/richer shadows toward blue-violet, warmer highlights toward yellow-gold) + optional **ordered Bayer 2×2 pixel-art dithering**.
+- Strictly ignores transparent pixels (`alpha == 0`) and mathematically avoids beginner pillow-shading.
 
-3. **Aesthetic Engine v2 & 4 Golden Rules (`skinforge/audit/`)**:
-   - Evaluates **6 craftsmanship dimensions**: `3D Relief Depth`, `Palette Harmony`, `Shading Depth`, `Spatial Cluster Coherence`, `Vectorized Hue Shifting`, and `Seam Continuity`.
-   - Deterministic self-healing (`skin_auto_fix`) across all **4 Golden Rules**:
-     - **Rule 1**: Zero Holes on Base Layer (all 36 base parts 100% opaque).
-     - **Rule 2**: +0.35 3D Relief (thins bloated `>65%` marshmallow outer layers and synthesizes relief accents when empty).
-     - **Rule 3**: `hat_front` rows `4–7` strictly 100% transparent (eliminates floating profile cardboard planes).
-     - **Rule 4**: `hat_top` free of isolated floating crown planks (`<20` px).
+### 3. Semantic Multi-Face 3D Region Painter & 2D Primitives (`skinforge/regions.py`)
+- **`skin_paint_region`**: Paint entire 3D cuboids (`head`, `hat`, `hair_cap`, `torso`, `jacket`, `arms`, `sleeves`, `legs`, `pants`, `shoes`, `hands`) with 360° wrap-around patterns (`solid`, `vertical_gradient`, `horizontal_stripes`, `vertical_stripes`, `checker`, `cuff`, `belt`, `collar`) in **1 call** instead of 6–12.
+- **`skin_draw_primitive`**: Crisp Bresenham `line`, 1px `outline`, 4-connected `flood_fill`, 2-color `dither_rect`, and instant horizontal face symmetry (`mirror_x`).
 
-4. **Graceful RAG Degradation & Portable Database Packer (`skinforge/rag/`)**:
-   - **Zero-Dependency Operation**: Works out-of-the-box without a pre-installed 900k skin database; search tools return structured guidance pointing to `skin_rag_pack`.
-   - **Portable `.sfpack` / `.db` Packer (`skin_rag_pack` & `cli.py rag-pack`)**: Ingests any folder of `.png` skins or `.zip` archive (with optional `.json`/`.csv` metadata), validates & converts skins, computes `aesthetic_score`, serializes **299-dimensional CIELAB spatial-color pyramids** as compact `float16` BLOBs (598 bytes/skin), stores compressed PNG BLOBs, and indexes captions/tags in **SQLite FTS5 (BM25)**.
+### 4. Closed-Loop Multimodal Critic & Blueprint Inspector (`skin_critic`, `skin_inspect_blueprint`)
+- **`skin_critic`**: In **1 call**, renders a 3D turnaround image (`ImageContent`) AND outputs quantitative craftsmanship metrics + exact copy-pasteable MCP tool recipes (`skin_auto_fix`, `skin_auto_shade`, `skin_align_seams`, `skin_denoise_palette`) to reach `top_tier` (`>= 0.85`).
+- **`skin_inspect_blueprint`**: Replaces 6–8 separate inspection calls with a single token-efficient JSON overview (model, Golden Rules, 6 metrics, top colors, active Layer 2 parts, seam count, fix recipes, optional region ASCII).
 
-5. **SkinForge Studio v1.3.0 (`viewer.py` + `static/`)**:
-   - **Server-Sent Events (`/api/events`)**: Instant push updates of skin texture, model (`classic`/`slim`), and live audit telemetry over `ThreadingHTTPServer`, with `/api/status` retained as fallback.
-   - **Studio Controls**: Animations (`Idle`, `Walk`, `Run`, `Wave`, `Fly`, `Pause`), animation speed slider, turntable rotation, and lighting presets (`Studio`, `Daylight`, `Unlit Flat Pixel-Art` with zero face shading).
-   - **Layer Toggle Matrix**: Independent Base (L1) and Outer (L2) visibility checkboxes for `Head`, `Torso`, `Arms`, and `Legs`.
-   - **Interactive 2D UV Map Preview (64×64)**: Corner pixel-art preview with real-time hover inspector displaying UV part name, layer, `X/Y` coordinates, and `HEX` color.
-   - **One-Click Exports**: `Export Skin PNG` and `Screenshot 3D PNG`.
+### 5. Expanded Outfits, Presets, Smart Harmonies & Turbo Batching
+- **`skin_generate_palette`**: Generates complete character palettes + hue-shifted ASCII dicts from a single seed color (`analogous`, `complementary`, `split_complementary`, `triadic`, `monochromatic`, `cyberpunk`), plus 2 new curated palettes (`CYBER_NINJA`, `COZY_PASTEL`).
+- **7 Full-Body Outfits** (`skin_apply_outfit`, Slim 3px & Classic 4px aware): `techwear_hoodie`, `cargo_streetwear`, `casual_tshirt`, `fantasy_knight`, `cyber_ninja`, `formal_suit`, `cozy_sweater`.
+- **10 Modular Presets** (`skin_apply_preset`): `anime_eyes_2x2`, `hoodie_drawstrings`, `cargo_pocket`, `hair_bangs`, `sneakers`, `headphones`, `visor_glasses`, `crown`, `scarf`, `blush_and_mouth`.
+- **Upgraded `skin_batch_actions`**: Now supports **20 action types** (including `paint_region`, `auto_shade`, `draw_primitive`, `set_ascii`, `apply_outfit`, `align_seams`, `auto_fix`) plus `return_preview=True` for single-round-trip edit + 3D verification.
+
+---
+
+## 🧰 Complete MCP Tool Catalog (63 Native Tools)
+
+| Category | Tools |
+|---|---|
+| **Session & History (9)** | `skin_new`, `skin_load`, `skin_save`, `skin_get_session_info`, `skin_checkpoint`, `skin_restore_checkpoint`, `skin_undo`, `skin_redo`, `skin_history` |
+| **AI Editing, Shading & Primitives (24)** | `skin_auto_shade`, `skin_paint_region`, `skin_draw_primitive`, `skin_batch_actions`, `skin_build`, `skin_get_part_ascii`, `skin_set_part_ascii`, `skin_fill_part`, `skin_draw_rect`, `skin_set_pixel`, `skin_set_pixels`, `skin_get_pixel`, `skin_apply_gradient`, `skin_replace_color`, `skin_adjust_hsv`, `skin_shift_hue`, `skin_list_colors`, `skin_diff`, `skin_denoise_palette`, `skin_import_part`, `skin_convert_model`, `skin_mirror_limb`, `skin_add_noise`, `skin_clear_outer_layer` |
+| **Design, Outfits & Palettes (8)** | `skin_generate_palette`, `skin_generate_color_ramp`, `skin_list_palettes`, `skin_apply_outfit`, `skin_apply_preset`, `skin_draw_text`, `skin_draw_symbol`, `skin_sample_reference` |
+| **Rendering, Blueprint & Critic (11)** | `skin_critic`, `skin_inspect_blueprint`, `skin_render_3d`, `skin_render_2d`, `skin_render_part`, `skin_render_turntable_gif`, `skin_aesthetic_audit`, `skin_validate`, `skin_auto_fix`, `skin_check_seams`, `skin_align_seams` |
+| **RAG & Lego Constructor (8)** | `skin_rag_pack`, `skin_rag_status`, `skin_search`, `skin_part_search`, `skin_search_by_image`, `skin_get_reference`, `skin_remix`, `skin_assemble` |
+| **3D WebGL Studio (3)** | `viewer_start`, `viewer_status`, `viewer_stop` |
+
+**MCP Resources (5)**: `skin://uv-map`, `skin://layer-rules`, `skin://palettes`, `skin://session-state`, `skin://regions-and-presets`  
+**MCP Prompts (3)**: `create-skin`, `audit-and-fix-skin`, `restyle-skin`
 
 ---
 
@@ -51,54 +64,41 @@ SkinForge is an all-in-one professional architecture designed for both **human s
 
 ```
 SkinForge-MCP/
-├── instructions.md            # System instructions & architectural guide for AI models / MCP clients
-├── pyproject.toml             # Python packaging metadata (v1.3.0)
-├── README.md                  # Project overview & documentation
-├── cli.py                     # Command-line interface (including `rag-pack`)
+├── instructions.md            # AI agent system instructions (synced with skinforge/instructions.md)
+├── pyproject.toml             # Python packaging metadata (v2.0.0)
+├── README.md                  # Project overview & MCP documentation
+├── cli.py                     # CLI (`render`, `gif`, `inspect`, `shade`, `seams`, `convert`, `rag-pack`, `view`, `mcp`)
 ├── mcp_server.py              # Stdio MCP server entry point
 ├── viewer.py                  # Interactive 3D WebGL Studio server with SSE (/api/events)
-├── skinforge/                 # Refactored modular library (v1.3.0)
-│   ├── __init__.py            # Public exports (v1.3.0)
-│   ├── core/                  # Core UV, Canvas & Session architecture
-│   │   ├── uv.py              # 72 UV zones (classic & slim) + 64x32 -> 64x64 converter
-│   │   ├── canvas.py          # SkinCanvas, atomic PNG I/O, 30-step undo/redo
-│   │   └── session.py         # Thread-safe SkinSession manager
-│   ├── color/                 # Vectorized Color Engine
-│   │   ├── spaces.py          # RGB <-> HSV / HSL / CIELAB (alpha==0 safe)
-│   │   └── palettes.py        # Curated palettes & 5-step color ramp generator
-│   ├── audit/                 # Aesthetic Engine v2 & 4 Golden Rules
-│   │   ├── aesthetic.py       # 6-dimensional craftsmanship scorer & Golden Rules evaluator
-│   │   ├── validator.py       # SkinValidator & deterministic auto_fix_skin
-│   │   └── seams.py           # 3D cuboid seam continuity checker & blender
-│   ├── rag/                   # Optional RAG & Portable Packer
-│   │   ├── engine.py          # SkinRAG with graceful degradation, FTS5 BM25 & visual search
-│   │   ├── packer.py          # Folder / ZIP -> SQLite .sfpack / .db packer
-│   │   └── vision.py          # 299-dim CIELAB spatial pyramid (float16 BLOB codec)
-│   ├── mcp_server.py          # MCPServer with Pydantic schemas & unified error handling
-│   ├── modular.py             # Lego Constructor: assembly & isolated mannequin previews
+├── skinforge/                 # Modular library (v2.0.0)
+│   ├── __init__.py            # Public exports (v2.0.0)
+│   ├── core/                  # UV registry (72 zones), SkinCanvas, atomic PNG I/O, thread-safe SkinSession
+│   ├── color/                 # Vectorized RGB/HSV/HSL/CIELAB spaces, curated palettes & harmony generator
+│   ├── audit/                 # Aesthetic Engine v2 (6 metrics), 4 Golden Rules validator, 3D seam healer
+│   ├── mcp/                   # Modular MCP server (protocol, schemas, session, editing, design, audit, rag, resources)
+│   ├── rag/                   # Optional FTS5 BM25 + 299-dim CIELAB float16 search & portable .sfpack packer
+│   ├── shading.py             # Procedural hue-shifted pixel-art auto-shading & Bayer 2x2 dithering (NEW)
+│   ├── regions.py             # Semantic multi-face 3D region painter & 2D primitives (NEW)
+│   ├── outfits.py             # 7 full-body coordinated outfit macros (Classic & Slim)
+│   ├── presets.py             # 10 anatomical, facial & accessory presets
 │   ├── renderer.py            # Software 3D Z-buffer rasterizer, 2D composite, turntable GIF
+│   ├── modular.py             # Lego Constructor assembly & isolated mannequin previews
 │   ├── ascii_codec.py         # ASCII DSL codec & color normalizer
 │   ├── templates.py           # Solid humanoid base templates (0 holes)
-│   ├── presets.py             # Anatomical & clothing presets
 │   ├── typography.py          # 3x5 pixel font & cyber symbol stamps
-│   ├── outfits.py             # Full-body coordinated outfit macros
 │   ├── converter.py           # Steve 4px <-> Alex 3px slim model converter
-│   └── sampler.py             # Reference image color & palette sampler
-├── static/                    # SkinForge Studio WebGL Frontend
-│   ├── index.html             # Studio UI markup
-│   ├── style.css              # Dark premium glassmorphic theme
-│   ├── app.js                 # SSE client, Layer Matrix, 2D UV Inspector & 3D controls
-│   └── skinview3d.bundle.js   # Offline Three.js WebGL skinview3d bundle
+│   ├── sampler.py             # Reference image color & palette sampler
+│   └── mcp_server.py          # Slim backward-compatible MCP facade
+├── static/                    # SkinForge Studio Three.js WebGL + SSE frontend
 ├── examples/
 │   └── build_syntren.py       # Reference script building the Syntren skin
 ├── scripts/
-│   └── ingest_full_dataset.py # HuggingFace 900k dataset downloader & v1.3.0 FTS5/CIELAB indexer
-├── skins/
-│   └── skin_syntren.png       # 64x64 RGBA canonical skin
-└── tests/                     # Automated unit & integration test suite (100% passing)
+│   └── ingest_full_dataset.py # HuggingFace 900k dataset downloader & FTS5/CIELAB indexer
+└── tests/                     # Automated unit & integration test suite
     ├── test_mcp_server.py
     ├── test_rag.py
-    └── test_v1.py
+    ├── test_v1.py
+    └── test_v2.py             # v2.0.0 AI-first shading, regions, primitives, critic & harmony tests
 ```
 
 ---
@@ -111,18 +111,31 @@ SkinForge-MCP/
 pip install -e .
 ```
 
-### 2. Packing a Custom RAG Skin Database (`rag-pack` / `skin_rag_pack`)
+### 2. Connecting to an MCP Client (Claude Desktop, Cursor, Windsurf, Gemini CLI)
 
-```bash
-# Pack a folder of .png skins (or a .zip archive) + optional .json/.csv metadata into a single portable file:
-python3 cli.py rag-pack ./skins --out data/skins_rag.sfpack --overwrite
+Add SkinForge to your `.mcp.json` / MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "skinforge": {
+      "command": "python3",
+      "args": ["/absolute/path/to/SkinForge-MCP/mcp_server.py"]
+    }
+  }
+}
 ```
 
-### 3. Launching SkinForge Studio (SSE 3D WebGL Viewer)
+### 3. CLI Usage
 
 ```bash
-python3 viewer.py
-# Or via CLI:
+# Apply procedural hue-shifted auto-shading to any skin PNG
+python3 cli.py shade skins/skin_syntren.png --style directional --strength 0.35 --out skins/shaded.png
+
+# Pack a folder of .png skins or a .zip archive into a portable RAG database
+python3 cli.py rag-pack ./skins --out data/skins_rag.sfpack --overwrite
+
+# Launch SkinForge Studio (SSE 3D WebGL Viewer)
 python3 cli.py view
 ```
 

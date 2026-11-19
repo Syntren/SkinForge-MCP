@@ -1,8 +1,9 @@
 """
-SkinForge v1.3.0 - Autonomous Minecraft Skin Authoring, Inspection, RAG & 3D/2D Rendering Toolkit.
+SkinForge v2.0.0 - AI-First Autonomous Minecraft Skin Authoring, Hue-Shifted Shading,
+Semantic Region Painting, Multimodal Critique, RAG & 3D/2D Rendering Toolkit.
 """
 
-__version__ = "1.3.0"
+__version__ = "2.0.0"
 
 from .core import (
     ALL_PARTS,
@@ -34,7 +35,10 @@ from .core import (
 from .color import (
     ANIME_SKIN,
     CASUAL_STREETWEAR,
+    COZY_PASTEL,
+    CYBER_NINJA,
     FANTASY_KNIGHT,
+    PALETTE_REGISTRY,
     TECHWEAR_CYBERPUNK,
     adjust_rgba_hsl,
     adjust_rgba_hsv,
@@ -42,6 +46,7 @@ from .color import (
     extract_opaque_mask,
     extract_opaque_rgb,
     generate_color_ramp,
+    generate_harmonious_palette,
     hsl_to_rgb,
     hsv_to_rgb,
     rgb_to_cielab,
@@ -79,18 +84,36 @@ from .renderer import (
     render_turntable_gif,
 )
 from .presets import (
+    PRESET_REGISTRY,
     draw_anime_eyes_2x2,
+    draw_blush_and_mouth,
     draw_cargo_pocket,
+    draw_crown,
     draw_hair_bangs,
     draw_headphones,
     draw_hoodie_drawstrings,
+    draw_scarf,
     draw_sneakers,
+    draw_visor_glasses,
+)
+from .shading import (
+    SHADING_STYLES,
+    SHADING_TARGET_GROUPS,
+    auto_shade_part,
+    auto_shade_skin,
+)
+from .regions import (
+    PRIMITIVE_TYPES,
+    REGION_PARTS,
+    REGION_PATTERNS,
+    draw_primitive,
+    paint_region,
 )
 from .ascii_codec import canvas_to_ascii, normalize_color, part_to_ascii, rgba_to_hex
 from .templates import SKIN_TONE_PALETTES, create_base_body
 from .sampler import sample_image
 from .typography import draw_symbol, draw_text
-from .outfits import apply_outfit
+from .outfits import OUTFIT_STYLES, apply_outfit
 from .converter import convert_skin_model
 from .modular import ANATOMICAL_MODULES, assemble_skin, render_isolated_module
 
@@ -147,13 +170,31 @@ __all__ = [
     "ANIME_SKIN",
     "CASUAL_STREETWEAR",
     "FANTASY_KNIGHT",
+    "CYBER_NINJA",
+    "COZY_PASTEL",
+    "PALETTE_REGISTRY",
     "generate_color_ramp",
+    "generate_harmonious_palette",
+    "PRESET_REGISTRY",
     "draw_anime_eyes_2x2",
     "draw_hoodie_drawstrings",
     "draw_cargo_pocket",
     "draw_hair_bangs",
     "draw_sneakers",
     "draw_headphones",
+    "draw_visor_glasses",
+    "draw_crown",
+    "draw_scarf",
+    "draw_blush_and_mouth",
+    "SHADING_STYLES",
+    "SHADING_TARGET_GROUPS",
+    "auto_shade_part",
+    "auto_shade_skin",
+    "REGION_PARTS",
+    "REGION_PATTERNS",
+    "PRIMITIVE_TYPES",
+    "paint_region",
+    "draw_primitive",
     "normalize_color",
     "rgba_to_hex",
     "part_to_ascii",
@@ -175,6 +216,7 @@ __all__ = [
     "align_seams",
     "draw_text",
     "draw_symbol",
+    "OUTFIT_STYLES",
     "apply_outfit",
     "convert_skin_model",
     "ANATOMICAL_MODULES",
